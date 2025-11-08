@@ -1,0 +1,25 @@
+# TODO / Issues to Resolve in mqtt_handler.h
+
+## 1. Eliminar referencias a tipos y funciones de pulsos
+- El tipo `ProcessedData` y la función `publishPulseData` están orientados a pulsos, no a presión.
+- Adaptar o eliminar estas referencias para que el handler sea genérico o específico de presión.
+
+## 2. Desacoplar la lógica de MQTT de la estructura de datos concreta
+- El handler debe recibir mensajes ya formateados (topic + payload) desde una cola genérica.
+- No debe depender de la estructura interna de los datos de presión o pulsos.
+
+## 3. Definir e incluir solo los tipos realmente necesarios
+- El tipo `ProcessedData` no está definido ni incluido correctamente.
+- Revisar y limpiar los includes y forward declarations.
+
+## 4. Documentar claramente la interfaz pública
+- Revisar y actualizar los comentarios de las funciones para reflejar la nueva arquitectura desacoplada.
+
+## 5. Eliminar o adaptar funciones obsoletas
+- Eliminar funciones que ya no se usen tras la refactorización a colas genéricas.
+- Adaptar las funciones de publicación para trabajar con la nueva estructura de mensajes.
+
+---
+
+**Nota:**  
+Estos cambios forman parte del proceso de modularización y desacoplamiento del sistema, para facilitar la integración de nuevos sensores y tipos de telemetría sin modificar el código del handler MQTT.

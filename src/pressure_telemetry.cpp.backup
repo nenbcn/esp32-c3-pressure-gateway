@@ -1,0 +1,318 @@
+#include "pressure_telemetry.h"
+
+
+
+
+
+
+
+// Global batch queue (ring buffer, not consumed yet - TEMPORAL hasta implementar consumo)
+QueueHandle_t g_pressureBatchQueue = NULL;
+
+// Batching state - fixed buffer approach for stability
+static PressureReading currentBatch[TELEMETRY_BATCH_SIZE];
+static uint16_t currentBatchCount = 0;
+static uint64_t currentBatchStartTime = 0;
+static bool currentBatchHasEvent = false;
+static bool eventInProgress = false;
+
+// Processing state variables
+static float primaryFiltered = 0.0f;
+static float secondaryFiltered = 0.0f;
+static bool filtersInitialized = false;
+
+// Derivative calculation buffer
+static float derivativeBuffer[DERIVATIVE_WINDOW_SIZE];
+static int derivativeBufferIndex = 0;
+static float filteredDerivative = 0.0f;
+static bool derivativeInitialized = false;
+
+// Event detection state
+static EventState currentEventState = EVENT_STATE_IDLE;
+static unsigned long eventStartTime = 0;
+static unsigned long eventEndTime = 0;
+static unsigned long consolidationStartTime = 0;
+static uint32_t eventStartValue = 0;
+static uint32_t eventEndValue = 0;
+static uint16_t eventSampleCount = 0;
+
+// Statistics
+static unsigned long totalSamplesProcessed = 0;
+static unsigned long eventsDetected = 0;
+static unsigned long lastStatsTime = 0;
+
+/**
+ * @brief Initializes the pressure telemetry system.
+ * @return true if initialization successful, false otherwise.
+ * This function sets up the necessary queues and initializes the UtcClock.
+ * It also creates the pressure telemetry task.
+ */
+bool initializePressureTelemetry() {
+    // Create batch queue for MQTT communication
+    g_pressureBatchQueue = xQueueCreate(PRESSURE_BATCH_QUEUE_SIZE, sizeof(PressureBatch));
+    if (g_pressureBatchQueue == NULL) {
+        Log::error("Failed to create pressure batch queue");
+        return false;
+    }
+
+    // Initialize NTP time with UTC timezone
+    // NTP config is now handled by UtcClock
+
+    // Initialize processing state
+    filtersInitialized = false;
+    derivativeInitialized = false;
+    currentEventState = EVENT_STATE_IDLE;
+    totalSamplesProcessed = 0;
+    eventsDetected = 0;
+
+    Log::info("Pressure telemetry initialized with batch queue size %d", PRESSURE_BATCH_QUEUE_SIZE);
+    return true;
+}
+
+
+
+float applyEPAFilter(float newValue, float prevFiltered, float alpha) {
+    return alpha * newValue + (1.0f - alpha) * prevFiltered;
+}
+
+
+// Derivative calculation: simple moving difference over window
+float calculateDerivative(float currentValue) {
+    static float buffer[DERIVATIVE_WINDOW_SIZE] = {0};
+    static int idx = 0;
+    static bool filled = false;
+    float oldest = buffer[idx];
+    buffer[idx] = currentValue;
+    idx = (idx + 1) % DERIVATIVE_WINDOW_SIZE;
+    if (!filled && idx == 0) filled = true;
+    if (!filled) return 0.0f;
+    return (currentValue - oldest) / DERIVATIVE_WINDOW_SIZE;
+}
+
+// Derivative calculation
+
+
+const char* determineEventType(bool hasEvent, float averageDerivative) {
+    if (!hasEvent) {
+        return "pressure_stable";
+    }
+    if (averageDerivative > 1.0f) {
+        return "pressure_increase";
+    } else if (averageDerivative < -1.0f) {
+        return "pressure_decrease";
+    } else {
+        return "pressure_stable";
+    }
+}
+
+void flushCurrentBatch() {
+    if (currentBatchCount == 0) return;
+
+    PressureBatch batch;
+    batch.batchTimestamp = millis();
+    batch.isEventStart = false;
+    batch.isEventEnd = false;
+    batch.hasSignificantEvent = currentBatchHasEvent;
+    batch.readingCount = currentBatchCount;
+    // Determinar tipo de evento para el batch
+    float avgDerivative = filteredDerivative; // Puedes ajustar el cálculo si tienes un promedio real
+    const char* typeStr = determineEventType(currentBatchHasEvent, avgDerivative);
+    strncpy(batch.eventType, typeStr, sizeof(batch.eventType));
+    for (uint16_t i = 0; i < currentBatchCount && i < TELEMETRY_BATCH_SIZE; ++i) {
+        batch.readings[i] = currentBatch[i];
+    }
+    if (xQueueSend(g_pressureBatchQueue, &batch, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Log::warn("Failed to queue pressure batch (queue full)");
+    }
+    // Reset batch
+    currentBatchCount = 0;
+    currentBatchHasEvent = false;
+}
+
+void addToBatch(const PressureReading* reading) {
+    if (currentBatchCount >= TELEMETRY_BATCH_SIZE) {
+        // Batch full - flush it
+        flushCurrentBatch();
+    }
+    
+    if (currentBatchCount == 0) {
+        currentBatchStartTime = millis();
+    }
+    
+    // Add reading to current batch
+    currentBatch[currentBatchCount] = *reading;
+    currentBatchCount++;
+}
+
+void endCurrentEvent() {
+    if (eventInProgress && currentBatchCount > 0) {
+        // Create final batch with isEventEnd = true
+        PressureBatch finalBatch;
+    finalBatch.batchTimestamp = millis();
+        finalBatch.readingCount = currentBatchCount;
+        finalBatch.hasSignificantEvent = true;
+        finalBatch.isEventStart = false;
+        finalBatch.isEventEnd = true;
+        
+    float avgDerivative = filteredDerivative;
+    const char* typeStr = determineEventType(true, avgDerivative);
+    strncpy(finalBatch.eventType, typeStr, sizeof(finalBatch.eventType));
+        
+        memcpy(finalBatch.readings, currentBatch, currentBatchCount * sizeof(PressureReading));
+        
+        xQueueSend(g_pressureBatchQueue, &finalBatch, pdMS_TO_TICKS(100));
+        
+        Log::info("Event ended - final batch marked with isEventEnd=true");
+        
+        // Reset event state
+        eventInProgress = false;
+        currentBatchCount = 0;
+        currentBatchHasEvent = false;
+    }
+}
+
+void processEventDetection(float derivative, uint32_t rawValue, unsigned long timestamp) {
+    float thresholdHigh = DERIVATIVE_THRESHOLD;
+    float thresholdLow = DERIVATIVE_THRESHOLD * EVENT_HYSTERESIS_FACTOR;
+    
+    switch (currentEventState) {
+        case EVENT_STATE_IDLE:
+            if (derivative > thresholdHigh) {
+                currentEventState = EVENT_STATE_DETECTING;
+                eventStartTime = timestamp;
+                eventStartValue = rawValue;
+                eventSampleCount = 1;
+                eventInProgress = true;
+                Log::debug("Event detection started at reading timestamp %lu", timestamp);
+            }
+            break;
+            
+        case EVENT_STATE_DETECTING:
+            eventSampleCount++;
+            if (timestamp - eventStartTime >= MIN_EVENT_DURATION_MS) {
+                if (derivative > thresholdHigh) {
+                    currentEventState = EVENT_STATE_ACTIVE;
+                    Log::debug("Event confirmed after %d samples", eventSampleCount);
+                } else if (derivative < thresholdLow) {
+                    currentEventState = EVENT_STATE_IDLE;
+                    Log::debug("Event detection cancelled (false alarm)");
+                }
+            }
+            break;
+            
+        case EVENT_STATE_ACTIVE:
+            eventSampleCount++;
+            eventEndValue = rawValue;
+            eventEndTime = timestamp;
+            
+            if (derivative < thresholdLow) {
+                currentEventState = EVENT_STATE_CONSOLIDATING;
+                consolidationStartTime = timestamp;
+                Log::debug("Event entering consolidation period");
+            }
+            break;
+            
+        case EVENT_STATE_CONSOLIDATING:
+            if (derivative > thresholdHigh) {
+                currentEventState = EVENT_STATE_ACTIVE;
+                eventSampleCount++;
+                eventEndValue = rawValue;
+                eventEndTime = timestamp;
+                Log::debug("Event extended during consolidation");
+            } else if (timestamp - consolidationStartTime > POST_EVENT_PERIOD_MS) {
+                // End event with simplified approach
+                endCurrentEvent();
+                currentEventState = EVENT_STATE_IDLE;
+                eventsDetected++;
+            }
+            break;
+    }
+}
+
+void pressureTelemetryTask(void *pvParameters) {
+    TickType_t lastWakeTime = xTaskGetTickCount();
+    const TickType_t processInterval = pdMS_TO_TICKS(TELEMETRY_PROCESS_INTERVAL_MS);
+    
+    Log::info("Pressure telemetry task started, processing every %dms", TELEMETRY_PROCESS_INTERVAL_MS);
+    lastStatsTime = millis();
+    
+    while (1) {
+    uint64_t processingStart = millis();
+        int samplesProcessed = 0;
+
+        // Process all available samples in queue
+        PressureReading reading;
+        while (xQueueReceive(g_pressureQueue, &reading, 0) == pdTRUE) {
+            // La validación de la muestra ya se realiza en pressure_reader.cpp
+            samplesProcessed++;
+            totalSamplesProcessed++;
+
+            float rawFloat = (float)reading.rawValue;
+
+            // Apply double EPA filtering
+            if (!filtersInitialized) {
+                primaryFiltered = rawFloat;
+                secondaryFiltered = rawFloat;
+                filtersInitialized = true;
+            } else {
+                primaryFiltered = applyEPAFilter(rawFloat, primaryFiltered, EPA_ALPHA_PRIMARY);
+                secondaryFiltered = applyEPAFilter(primaryFiltered, secondaryFiltered, EPA_ALPHA_SECONDARY);
+            }
+
+            // Calculate and filter derivative
+            float rawDerivative = calculateDerivative(secondaryFiltered);
+            if (derivativeInitialized) {
+                filteredDerivative = applyEPAFilter(rawDerivative, filteredDerivative, DERIVATIVE_FILTER_ALPHA);
+
+                // Process event detection with consolidation
+                processEventDetection(filteredDerivative, reading.rawValue, reading.timestamp);
+
+                if (currentEventState != EVENT_STATE_IDLE) {
+                    currentBatchHasEvent = true;
+                }
+            }
+
+            // Add reading to current batch (ALWAYS - preserve all data)
+            addToBatch(&reading);
+        }
+
+    // FLUSH STRATEGY: Event completion flush only (batch is flushed by size in addToBatch)
+
+        // FLUSH STRATEGY 2: Event completion flush
+        static EventState lastEventState = EVENT_STATE_IDLE;
+        if (lastEventState != EVENT_STATE_IDLE && currentEventState == EVENT_STATE_IDLE) {
+            Log::info("Event completed - flushing batch immediately");
+            flushCurrentBatch();
+        }
+        lastEventState = currentEventState;
+
+        // Periodic statistics and monitoring
+    uint64_t currentTime = millis();
+        if (currentTime - lastStatsTime > 10000) { // Every 10 seconds
+            lastStatsTime = currentTime;
+
+            UBaseType_t queueLevel = uxQueueMessagesWaiting(g_pressureQueue);
+            UBaseType_t eventQueueLevel = uxQueueMessagesWaiting(g_pressureBatchQueue);
+
+            Log::debug("Telemetry: processed=%llu, events=%llu, queue=%lu/%d, eventQ=%lu/%d", 
+                      totalSamplesProcessed, eventsDetected, queueLevel, PRESSURE_QUEUE_SIZE,
+                      eventQueueLevel, PRESSURE_BATCH_QUEUE_SIZE);
+        }
+
+        // Log processing performance
+        if (samplesProcessed > 0) {
+            uint64_t processingTime = millis() - processingStart;
+            float avgSampleTime = (float)processingTime / samplesProcessed;
+            if (processingTime > 100) {
+                Log::warn("Slow telemetry processing: %llums for %d samples (avg %.2f ms/sample)", 
+                          processingTime, samplesProcessed, avgSampleTime);
+            } else {
+                Log::debug("Telemetry processing: %llums for %d samples (avg %.2f ms/sample)", 
+                          processingTime, samplesProcessed, avgSampleTime);
+            }
+        }
+
+        vTaskDelayUntil(&lastWakeTime, processInterval);
+    }
+}
+

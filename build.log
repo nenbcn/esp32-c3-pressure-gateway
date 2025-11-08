@@ -1,0 +1,148 @@
+Processing esp32_c3_gateway (platform: espressif32; board: seeed_xiao_esp32c3; framework: arduino)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/seeed_xiao_esp32c3.html
+PLATFORM: Espressif 32 (6.10.0) > Seeed Studio XIAO ESP32C3
+HARDWARE: ESP32C3 160MHz, 320KB RAM, 4MB Flash
+DEBUG: Current (cmsis-dap) External (cmsis-dap, esp-bridge, esp-builtin, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-arduinoespressif32 @ 3.20017.241212+sha.dcc1105b 
+ - tool-esptoolpy @ 1.40501.0 (4.5.1) 
+ - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 41 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- ESP Async WebServer @ 3.0.6
+|-- EEPROM @ 2.0.0
+|-- WiFi @ 2.0.0
+|-- HTTPClient @ 2.0.0
+|-- Preferences @ 2.0.0
+|-- PubSubClient @ 2.8.0
+|-- AsyncTCP @ 3.3.2
+|-- ArduinoJson @ 6.21.5
+|-- Adafruit NeoPixel @ 1.15.1
+|-- WiFiClientSecure @ 2.0.0
+|-- Log
+|-- HTTPUpdate @ 2.0.0
+|-- Wire @ 2.0.0
+|-- UtcClock
+Building in release mode
+Compiling .pio/build/esp32_c3_gateway/src/led_manager.cpp.o
+Compiling .pio/build/esp32_c3_gateway/src/mqtt_handler.cpp.o
+Compiling .pio/build/esp32_c3_gateway/src/pressure_telemetry.cpp.o
+Compiling .pio/build/esp32_c3_gateway/src/system_state.cpp.o
+Archiving .pio/build/esp32_c3_gateway/libb4d/libAsync TCP.a
+Compiling .pio/build/esp32_c3_gateway/lib829/FS/vfs_api.cpp.o
+Compiling .pio/build/esp32_c3_gateway/libc12/WiFi/WiFi.cpp.o
+Compiling .pio/build/esp32_c3_gateway/libc12/WiFi/WiFiAP.cpp.o
+src/mqtt_handler.cpp:2:10: fatal error: telemetry_manager.h: No such file or directory
+
+***************************************************************************
+* Looking for telemetry_manager.h dependency? Check our library registry!
+*
+* CLI  > platformio lib search "header:telemetry_manager.h"
+* Web  > https://registry.platformio.org/search?q=header:telemetry_manager.h
+*
+***************************************************************************
+
+ #include "telemetry_manager.h"
+          ^~~~~~~~~~~~~~~~~~~~~
+compilation terminated.
+In file included from src/pressure_telemetry.cpp:1:
+src/pressure_telemetry.h:6:1: error: 'uint64_t' does not name a type
+ uint64_t getCurrentTime(uint64_t millisTimestamp);
+ ^~~~~~~~
+*** [.pio/build/esp32_c3_gateway/src/mqtt_handler.cpp.o] Error 1
+Indexing .pio/build/esp32_c3_gateway/libb4d/libAsync TCP.a
+src/led_manager.cpp: In function 'void initializeLedManager()':
+src/led_manager.cpp:31:5: error: 'logMessage' was not declared in this scope
+     logMessage(LOG_LEVEL_INFO, "LED Manager initialized with NeoPixel (ESP32-C3).");
+     ^~~~~~~~~~
+src/led_manager.cpp:31:5: note: suggested alternative: 'LogMessage'
+     logMessage(LOG_LEVEL_INFO, "LED Manager initialized with NeoPixel (ESP32-C3).");
+     ^~~~~~~~~~
+     LogMessage
+In file included from src/system_state.cpp:5:
+src/mqtt_handler.h:48:23: error: 'ProcessedData' was not declared in this scope
+ bool publishPulseData(ProcessedData* data, uint8_t count);
+                       ^~~~~~~~~~~~~
+src/mqtt_handler.h:48:38: error: 'data' was not declared in this scope
+ bool publishPulseData(ProcessedData* data, uint8_t count);
+                                      ^~~~
+In file included from src/pressure_telemetry.cpp:1:
+src/pressure_telemetry.h:22:3: error: conflicting declaration 'typedef struct PressureReading PressureReading'
+ } PressureReading;
+   ^~~~~~~~~~~~~~~
+In file included from src/pressure_telemetry.h:13,
+                 from src/pressure_telemetry.cpp:1:
+src/data_types.h:28:3: note: previous declaration as 'typedef struct PressureReading PressureReading'
+ } PressureReading;
+   ^~~~~~~~~~~~~~~
+src/mqtt_handler.h:48:38: note: suggested alternative: 'atan'
+ bool publishPulseData(ProcessedData* data, uint8_t count);
+                                      ^~~~
+                                      atan
+src/mqtt_handler.h:48:52: error: expected primary-expression before 'count'
+ bool publishPulseData(ProcessedData* data, uint8_t count);
+                                                    ^~~~~
+src/mqtt_handler.h:48:57: error: expression list treated as compound expression in initializer [-fpermissive]
+ bool publishPulseData(ProcessedData* data, uint8_t count);
+                                                         ^
+In file included from src/pressure_telemetry.h:15,
+                 from src/system_state.cpp:11:
+lib/UtcClock/UtcClock.h:3:12: error: redefinition of 'const long int gmtOffsetSeconds'
+ const long gmtOffsetSeconds = 0;
+            ^~~~~~~~~~~~~~~~
+In file included from src/pressure_reader.h:9,
+                 from src/system_state.cpp:10:
+lib/UtcClock/UtcClock.h:3:12: note: 'const long int gmtOffsetSeconds' previously defined here
+ const long gmtOffsetSeconds = 0;
+            ^~~~~~~~~~~~~~~~
+In file included from src/pressure_telemetry.h:15,
+                 from src/system_state.cpp:11:
+lib/UtcClock/UtcClock.h:4:11: error: redefinition of 'const int daylightOffsetSeconds'
+ const int daylightOffsetSeconds = 0;
+           ^~~~~~~~~~~~~~~~~~~~~
+In file included from src/pressure_reader.h:9,
+                 from src/system_state.cpp:10:
+lib/UtcClock/UtcClock.h:4:11: note: 'const int daylightOffsetSeconds' previously defined here
+ const int daylightOffsetSeconds = 0;
+           ^~~~~~~~~~~~~~~~~~~~~
+In file included from src/pressure_telemetry.h:15,
+                 from src/system_state.cpp:11:
+lib/UtcClock/UtcClock.h:6:7: error: redefinition of 'class UtcClock'
+ class UtcClock {
+       ^~~~~~~~
+In file included from src/pressure_reader.h:9,
+                 from src/system_state.cpp:10:
+lib/UtcClock/UtcClock.h:6:7: note: previous definition of 'class UtcClock'
+ class UtcClock {
+       ^~~~~~~~
+In file included from src/system_state.cpp:11:
+src/pressure_telemetry.h:22:3: error: conflicting declaration 'typedef struct PressureReading PressureReading'
+ } PressureReading;
+   ^~~~~~~~~~~~~~~
+In file included from src/pressure_reader.h:7,
+                 from src/system_state.cpp:10:
+src/data_types.h:28:3: note: previous declaration as 'typedef struct PressureReading PressureReading'
+ } PressureReading;
+   ^~~~~~~~~~~~~~~
+src/system_state.cpp: In function 'void handleStateActions()':
+src/system_state.cpp:187:5: error: 'logMessage' was not declared in this scope
+     logMessage(LOG_LEVEL_INFO, "Entering state: %d", currentState);
+     ^~~~~~~~~~
+src/system_state.cpp:187:5: note: suggested alternative: 'LogMessage'
+     logMessage(LOG_LEVEL_INFO, "Entering state: %d", currentState);
+     ^~~~~~~~~~
+     LogMessage
+*** [.pio/build/esp32_c3_gateway/src/led_manager.cpp.o] Error 1
+*** [.pio/build/esp32_c3_gateway/src/pressure_telemetry.cpp.o] Error 1
+*** [.pio/build/esp32_c3_gateway/src/system_state.cpp.o] Error 1
+========================== [FAILED] Took 5.66 seconds ==========================
+
+Environment       Status    Duration
+----------------  --------  ------------
+esp32_c3_gateway  FAILED    00:00:05.659
+==================== 1 failed, 0 succeeded in 00:00:05.659 ====================
