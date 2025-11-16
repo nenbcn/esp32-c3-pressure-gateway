@@ -2,28 +2,16 @@
 #include "board.h"
 #include "led_manager.h"
 
-#ifdef ESP32_C3
-// NeoPixel instance for ESP32-C3
+// NeoPixel instance
 Adafruit_NeoPixel strip(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 void setNeoPixelColor(uint8_t red, uint8_t green, uint8_t blue) {
     strip.setPixelColor(0, strip.Color(red, green, blue));
     strip.show();
 }
-#endif
-
-// Global flag for pressure change indication (volatile for thread-safety)
-static volatile bool g_pressureChangeActive = false;
-static volatile uint64_t g_pressureChangeTimestamp = 0;
-
-void triggerPressureChangeLed() {
-    g_pressureChangeActive = true;
-    g_pressureChangeTimestamp = millis();
-}
 
 void initializeLedManager() {
-#ifdef ESP32_C3
-    // Initialize NeoPixel for ESP32-C3
+    // Initialize NeoPixel
     strip.begin();
     strip.setBrightness(50); // Set brightness to 50% (0-255)
     strip.show(); // Initialize all pixels to 'off'
@@ -37,24 +25,7 @@ void initializeLedManager() {
     vTaskDelay(pdMS_TO_TICKS(500));
     setNeoPixelColor(0, 0, 0); // Off
     
-    Log::info("LED Manager initialized with NeoPixel (ESP32-C3).");
-#else
-    // Initialize individual LEDs for ESP32 WROOM
-    pinMode(GREEN_LED_PIN, OUTPUT);
-    pinMode(RED_LED_PIN, OUTPUT);
-    pinMode(BLUE_LED_PIN, OUTPUT);
-
-    digitalWrite(GREEN_LED_PIN, LOW);
-    digitalWrite(RED_LED_PIN, LOW);
-    digitalWrite(BLUE_LED_PIN, LOW);
-
-    Log::info("LED Manager initialized. LEDs turned ON for verification.");
-    vTaskDelay(pdMS_TO_TICKS(2000));
-
-    digitalWrite(GREEN_LED_PIN, HIGH);
-    digitalWrite(RED_LED_PIN, HIGH);
-    digitalWrite(BLUE_LED_PIN, HIGH);
-#endif
+    Log::info("LED Manager initialized with NeoPixel.");
 }
 
 void ledTask(void *pvParameters) {
@@ -65,37 +36,13 @@ void ledTask(void *pvParameters) {
     bool ledState = false; // For blinking effects
 
     while (true) {
-        // Check if pressure change indication is active (overrides normal state colors)
-        if (g_pressureChangeActive) {
-            uint64_t currentTime = millis();
-            if (currentTime - g_pressureChangeTimestamp < 500) {
-                // Blue blink for 500ms
-#ifdef ESP32_C3
-                setNeoPixelColor(0, 0, ledState ? 255 : 0); // Blue blinking
-#else
-                digitalWrite(BLUE_LED_PIN, ledState ? LOW : HIGH);
-#endif
-                ledState = !ledState;
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue; // Skip normal state processing
-            } else {
-                // Timeout reached, deactivate flag
-                g_pressureChangeActive = false;
-            }
-        }
-
         switch (currentState) {
             case SYSTEM_STATE_CONNECTING:
                 // Red LED blinks slowly to indicate a connecting attempt
                 if (previousState != currentState) {
                     Log::debug("LED: Connecting (Red LED blinking slowly)");
                 }
-#ifdef ESP32_C3
                 setNeoPixelColor(ledState ? 255 : 0, 0, 0); // Red blinking
-#else
-                digitalWrite(GREEN_LED_PIN, HIGH);
-                digitalWrite(RED_LED_PIN, ledState ? LOW : HIGH);
-#endif
                 ledState = !ledState;
                 vTaskDelay(pdMS_TO_TICKS(500));
                 break;
@@ -105,12 +52,7 @@ void ledTask(void *pvParameters) {
                 if (previousState != currentState) {
                     Log::debug("LED: Connected to WiFi (Green LED blinking slowly)");
                 }
-#ifdef ESP32_C3
                 setNeoPixelColor(0, ledState ? 255 : 0, 0); // Green blinking
-#else
-                digitalWrite(GREEN_LED_PIN, ledState ? LOW : HIGH);
-                digitalWrite(RED_LED_PIN, HIGH);
-#endif
                 ledState = !ledState;
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;
@@ -120,12 +62,7 @@ void ledTask(void *pvParameters) {
                 if (previousState != currentState) {
                     Log::debug("LED: Connected to MQTT (Green LED ON)");
                 }
-#ifdef ESP32_C3
                 setNeoPixelColor(0, 255, 0); // Green solid
-#else
-                digitalWrite(GREEN_LED_PIN, LOW);
-                digitalWrite(RED_LED_PIN, HIGH);
-#endif
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;
 
@@ -134,12 +71,7 @@ void ledTask(void *pvParameters) {
                 if (previousState != currentState) {
                     Log::warn("LED: System Error (Red LED ON)");
                 }
-#ifdef ESP32_C3
                 setNeoPixelColor(255, 0, 0); // Red solid
-#else
-                digitalWrite(GREEN_LED_PIN, HIGH);
-                digitalWrite(RED_LED_PIN, LOW);
-#endif
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;
 
@@ -148,27 +80,7 @@ void ledTask(void *pvParameters) {
                 if (previousState != currentState) {
                     Log::debug("LED: Configuration Mode (Green LED blinking fast)");
                 }
-#ifdef ESP32_C3
                 setNeoPixelColor(0, ledState ? 255 : 0, 0); // Green fast blinking
-#else
-                digitalWrite(GREEN_LED_PIN, ledState ? LOW : HIGH);
-                digitalWrite(RED_LED_PIN, HIGH);
-#endif
-                ledState = !ledState;
-                vTaskDelay(pdMS_TO_TICKS(200));
-                break;
-
-            case SYSTEM_STATE_WAITING_BUTTON_RELEASE:
-                // Red LED blinks quickly while waiting for button release
-                if (previousState != currentState) {
-                    Log::debug("LED: Waiting for button release (Red LED blinking fast)");
-                }
-#ifdef ESP32_C3
-                setNeoPixelColor(ledState ? 255 : 0, 0, 0); // Red fast blinking
-#else
-                digitalWrite(GREEN_LED_PIN, HIGH);
-                digitalWrite(RED_LED_PIN, ledState ? LOW : HIGH);
-#endif
                 ledState = !ledState;
                 vTaskDelay(pdMS_TO_TICKS(200));
                 break;
@@ -178,12 +90,7 @@ void ledTask(void *pvParameters) {
                 if (previousState != currentState) {
                     Log::warn("LED: Unknown State (All LEDs OFF)");
                 }
-#ifdef ESP32_C3
                 setNeoPixelColor(0, 0, 0); // Off
-#else
-                digitalWrite(GREEN_LED_PIN, HIGH);
-                digitalWrite(RED_LED_PIN, HIGH);
-#endif
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;
         }

@@ -19,10 +19,4 @@ void initializeLedManager();
  */
 void ledTask(void *pvParameters);
 
-/**
- * @brief Triggers a blue LED blink to indicate pressure change detection.
- * This is a non-blocking call that sets a flag for the LED task to handle.
- */
-void triggerPressureChangeLed();
-
 #endif

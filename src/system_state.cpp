@@ -241,6 +241,13 @@ static void handleStateTransitions() {
 
     if (event == 0) return;
 
+    // Handle long press button event globally, in any state
+    if (event & EVENT_LONG_PRESS_BUTTON) {
+        Log::info("Long press button event received. Transitioning to CONFIG_MODE.");
+        setSystemState(SYSTEM_STATE_CONFIG_MODE);
+        return; // Process this event exclusively
+    }
+
     SystemState currentState = getSystemState();
     switch (currentState) {
         case SYSTEM_STATE_CONNECTING:
@@ -294,18 +301,6 @@ static void handleStateTransitions() {
             // TODO: En este estado, podríamos manejar configuraciones adicionales
             break;
 
-        case SYSTEM_STATE_WAITING_BUTTON_RELEASE:
-            if (event & EVENT_BUTTON_RELEASED) {
-                Log::info("Button released. Transitioning to CONNECTING MODE.");
-                setSystemState(SYSTEM_STATE_CONNECTING);
-            }
-            if (event & EVENT_LONG_PRESS_BUTTON) {
-                Log::info("Long press detected while waiting for button release.");
-                // cambiar a estado de configuración
-                setSystemState(SYSTEM_STATE_CONFIG_MODE);
-            }
-            break;
-
         case SYSTEM_STATE_ERROR:
             Log::error("Critical system error detected. Restarting device in 5 seconds...");
             break;
@@ -313,12 +308,6 @@ static void handleStateTransitions() {
         default:
             Log::error("Unknown system state: %d", currentState);
             break;
-    }
-
-    // Manejar solo el evento de `EVENT_BUTTON_PRESSED` en cualquier estado
-    if (event & EVENT_BUTTON_PRESSED) {
-        Log::info("Button pressed. Transitioning to WAITING_BUTTON_RELEASE.");
-        setSystemState(SYSTEM_STATE_WAITING_BUTTON_RELEASE);
     }
 
     // Handle pressure system events (logging only for now)
@@ -392,15 +381,6 @@ static void handleStateActions() {
             if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
             if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
-            break;
-
-        case SYSTEM_STATE_WAITING_BUTTON_RELEASE:
-            if (g_wifiConnectTaskHandle) vTaskSuspend(g_wifiConnectTaskHandle);
-            if (g_wifiConfigTaskHandle) vTaskSuspend(g_wifiConfigTaskHandle);
-            if (g_buttonTaskHandle) vTaskResume(g_buttonTaskHandle); // Activar la tarea del botón para esperar liberación
-            if (g_mqttConnectTaskHandle) vTaskSuspend(g_mqttConnectTaskHandle);
-            if (g_mqttTaskHandle) vTaskSuspend(g_mqttTaskHandle);
-            if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
             break;
 
         case SYSTEM_STATE_OTA_UPDATE:

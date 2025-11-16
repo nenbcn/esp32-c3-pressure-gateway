@@ -16,7 +16,6 @@ typedef enum {
     SYSTEM_STATE_CONFIG_MQTT,           // Conectado a WiFi y configurando MQTT 
     SYSTEM_STATE_CONNECTED_MQTT,         // Conectado a WiFi y MQTT
     SYSTEM_STATE_CONFIG_MODE,            // Modo de configuración activado
-    SYSTEM_STATE_WAITING_BUTTON_RELEASE, // Esperando liberación del botón
     SYSTEM_STATE_OTA_UPDATE,             // OTA update state
     SYSTEM_STATE_ERROR                   // Error crítico detectado
 } SystemState;
@@ -35,9 +34,7 @@ typedef enum {
     EVENT_WIFI_CONFIG_SAVED     = (1 << 9),  // WiFi configuration saved
     EVENT_WIFI_CONFIG_STOPPED   = (1 << 10), // WiFi configuration mode stopped
     EVENT_MQTT_DISCONNECTED     = (1 << 11), // MQTT disconnected
-    EVENT_LONG_PRESS_BUTTON     = (1 << 12), // Long button press
-    EVENT_BUTTON_PRESSED        = (1 << 13), // Button pressed
-    EVENT_BUTTON_RELEASED       = (1 << 14), // Button released
+    EVENT_LONG_PRESS_BUTTON     = (1 << 12), // Long button press (5 seconds)
     EVENT_WIFI_DISCONNECTED     = (1 << 15), // WiFi disconnected
     EVENT_OTA_UPDATE            = (1 << 16), // OTA update event
     EVENT_MQTT_AWS_CREDENTIALS  = (1 << 17), // AWS credentials received
