@@ -218,13 +218,8 @@ bool processStablePeriod(StableAccumulator* accumulator, uint32_t filteredValue,
     // Check if stable period should be finalized
     uint64_t periodDuration = timestamp - accumulator->periodStartTime;
     
-    // Finalize if minimum duration reached and we have enough samples
-    if (periodDuration >= MIN_STABLE_DURATION_MS && accumulator->sampleCount >= 50) {
-        return true;
-    }
-    
-    // Force finalization if maximum timeout reached
-    if (periodDuration >= MAX_INTERVAL_TIMEOUT_MS) {
+    // Force finalization if maximum timeout reached (60 seconds for stable events)
+    if (periodDuration >= MAX_STABLE_EVENT_DURATION_MS) {
         return true;
     }
     
@@ -258,8 +253,8 @@ bool processChangingPeriod(PressureEvent* event, uint32_t filteredValue, uint64_
     // Check if event should be finalized
     uint64_t eventDuration = timestamp - event->startTimestamp;
     
-    // Finalize if we've collected enough samples or reached time limit
-    if (event->sampleCount >= MAX_SAMPLES_PER_EVENT || eventDuration >= MAX_INTERVAL_TIMEOUT_MS) {
+    // Finalize if we've collected enough samples or reached time limit (3 seconds for changing events)
+    if (event->sampleCount >= MAX_SAMPLES_PER_EVENT || eventDuration >= MAX_CHANGING_EVENT_DURATION_MS) {
         return true;
     }
     

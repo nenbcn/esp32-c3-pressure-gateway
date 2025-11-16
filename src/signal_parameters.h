@@ -39,11 +39,12 @@
 // --- ADAPTIVE INTERVAL PARAMETERS ---
 // Signal state machine for optimized data transmission with precise state transitions
 #define MIN_STABLE_DURATION_MS 2000              // Minimum time in stable state before transitioning (2s)
-#define MAX_INTERVAL_TIMEOUT_MS 60000            // Maximum interval duration before forced send (1 minute)
+#define MAX_STABLE_EVENT_DURATION_MS 60000       // Maximum duration for STABLE events (1 minute)
+#define MAX_CHANGING_EVENT_DURATION_MS 3000      // Maximum duration for CHANGING events (3 seconds)
 
 // --- EVENT SAMPLING PARAMETERS ---
 // Maximum samples stored per event (for detailed change intervals)
-#define MAX_SAMPLES_PER_EVENT 200               // Max detailed samples per changing event (2s @ 100Hz)
+#define MAX_SAMPLES_PER_EVENT 300                // Max detailed samples per changing event (3s @ 100Hz)
 
 // --- DATA VALIDATION PARAMETERS ---
 // Raw value limits for sensor validation

@@ -78,14 +78,19 @@ RAW (100Hz) → EPA1 → EPA2 → DERIVADA → DETECCIÓN → EVENTOS → JSON �
 
 ---
 
-## **3️⃣ Tipos de Intervalos**
+## **3️⃣ Tipos de Intervalos y Condiciones de Corte**
 
 ### **🔹 Intervalo Estable**
 **Características:**
 - Derivada bajo umbral durante tiempo mínimo
-- Solo se almacena presión promedio
+- Solo se almacena presión promedio (sin muestras detalladas)
 - Timestamps de inicio y fin
-- Número de muestras utilizadas
+- Número de muestras utilizadas para el promedio
+
+**Condiciones de Corte:**
+- ✅ **Cambio de estado:** Cuando la derivada supera el umbral (STABLE → CHANGING)
+- ✅ **Timeout:** Si el evento dura **más de 60 segundos** (se genera un nuevo evento STABLE)
+- ❌ **NO se corta** por número de muestras (solo acumula estadísticas)
 
 **JSON Output:**
 ```json
@@ -102,9 +107,14 @@ RAW (100Hz) → EPA1 → EPA2 → DERIVADA → DETECCIÓN → EVENTOS → JSON �
 ### **🔹 Intervalo de Cambio**
 **Características:**
 - Derivada supera umbral
-- Se almacenan TODAS las muestras
-- Incluye período pre-evento y post-evento
-- Timestamps individuales por muestra
+- Se almacenan TODAS las muestras detalladas (timestamp + valor + derivada)
+- Máximo 300 muestras por evento (3 segundos @ 100Hz)
+- Clasificación automática del tipo de cambio
+
+**Condiciones de Corte:**
+- ✅ **Cambio de estado:** Cuando la derivada vuelve bajo el umbral (CHANGING → STABLE)
+- ✅ **Timeout:** Si el evento dura **más de 3 segundos** (se genera un nuevo evento CHANGING)
+- ✅ **Buffer lleno:** Cuando se alcanzan 300 muestras almacenadas
 
 **JSON Output:**
 ```json
@@ -121,6 +131,23 @@ RAW (100Hz) → EPA1 → EPA2 → DERIVADA → DETECCIÓN → EVENTOS → JSON �
     [1634567890143, 3455000]
   ]
 }
+```
+
+### **🔹 Ejemplo de Secuencia con Timeouts**
+
+**Escenario: Estabilidad prolongada (150s)**
+```
+STABLE (0-60s) → evento STABLE #1 (60s, timeout)
+STABLE (60-120s) → evento STABLE #2 (60s, timeout)
+STABLE (120-150s) → evento STABLE #3 (30s, continúa...)
+```
+
+**Escenario: Cambio prolongado (10s)**
+```
+CHANGING (0-3s) → evento CHANGING #1 (3s, 300 muestras, timeout)
+CHANGING (3-6s) → evento CHANGING #2 (3s, 300 muestras, timeout)
+CHANGING (6-9s) → evento CHANGING #3 (3s, 300 muestras, timeout)
+CHANGING (9-10s) → evento CHANGING #4 (1s, 100 muestras, cambio a STABLE)
 ```
 
 ---
@@ -148,9 +175,10 @@ Los ejemplos a continuación son solo para referencia:
 
 ### **🔹 Gestión de Eventos**
 ```cpp
-#define MIN_EVENT_DURATION_MS 50           // Duración mínima de evento
-#define PRE_EVENT_PERIOD_MS 400            // Período pre-evento
-#define POST_EVENT_PERIOD_MS 200           // Período post-evento
+#define MIN_EVENT_DURATION_MS 50                // Duración mínima de evento
+#define MAX_STABLE_EVENT_DURATION_MS 60000      // Timeout para eventos STABLE (60s)
+#define MAX_CHANGING_EVENT_DURATION_MS 3000     // Timeout para eventos CHANGING (3s)
+#define MAX_SAMPLES_PER_EVENT 300               // Máximo 300 muestras (3s @ 100Hz)
 ```
 
 ### **🔹 Validación de Datos**
