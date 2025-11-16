@@ -3,7 +3,7 @@
 #define MQTT_HANDLER_H
 
 #include <Arduino.h>
-#include "pressure_telemetry.h"  // For MqttMessage structure
+#include "data_types.h"         // For MqttMessage structure
 #include "Log.h"
 
 // MQTT Handler Module - Simplified Generic Version

@@ -7,11 +7,12 @@
 #include "button_manager.h"
 #include "ota_manager.h"
 #include "pressure_reader.h"      // Replaces pin_receiver
-#include "pressure_telemetry.h"   // Replaces telemetry_manager
+#include "pressure_telemetry.h"   // Replaces telemetry_manager  
+#include "message_formatter.h"    // JSON formatting and batching
 
 // Internal Variables
 volatile SystemState g_systemState = SYSTEM_STATE_CONNECTING; // Initial system state
-static SemaphoreHandle_t g_stateMutex = NULL;                 // Mutex to protect the system state
+SemaphoreHandle_t g_stateMutex = NULL;                 // Mutex to protect the system state (defined here, declared in data_types.h)
 static TaskHandle_t g_stateManagerTaskHandle = NULL;          // Handle for the state management task
 static SystemState lastLoggedState = SYSTEM_STATE_ERROR;      // Last logged state
 
@@ -25,6 +26,7 @@ static TaskHandle_t g_buttonTaskHandle = NULL;         // Button management task
 static TaskHandle_t g_otaTaskHandle = NULL;            // OTA update task
 static TaskHandle_t g_pressureReaderTaskHandle = NULL;    // Pressure reader task
 static TaskHandle_t g_pressureTelemetryTaskHandle = NULL;  // Pressure telemetry task
+static TaskHandle_t g_messageFormatterTaskHandle = NULL;  // Message formatter task
 
 void setOtaTaskHandle(TaskHandle_t handle) {
     g_otaTaskHandle = handle;
@@ -74,6 +76,11 @@ bool initializeSystemState() {
         return false;
     }
 
+    if (!initializeMessageFormatter()) {
+        Log::error("Failed to initialize Message Formatter.");
+        return false;
+    }
+
     initializeOTAManager();
 
     // Create System Tasks with logs and verify their creation
@@ -106,6 +113,12 @@ bool initializeSystemState() {
     // Create Pressure Telemetry Task (replaces Telemetry Manager)
     if (xTaskCreate(pressureTelemetryTask, "Pressure Telemetry Task", PRESSURE_TELEMETRY_STACK_SIZE, NULL, PRESSURE_TELEMETRY_PRIORITY, &g_pressureTelemetryTaskHandle) != pdPASS) {
         Log::error("Failed to create Pressure Telemetry Task.");
+        return false;
+    }
+
+    // Create Message Formatter Task (JSON formatting and batching)
+    if (xTaskCreate(messageFormatterTask, "Message Formatter Task", MESSAGE_FORMATTER_STACK_SIZE, NULL, MESSAGE_FORMATTER_PRIORITY, &g_messageFormatterTaskHandle) != pdPASS) {
+        Log::error("Failed to create Message Formatter Task.");
         return false;
     }
 
@@ -307,6 +320,15 @@ static void handleStateTransitions() {
         Log::info("Button pressed. Transitioning to WAITING_BUTTON_RELEASE.");
         setSystemState(SYSTEM_STATE_WAITING_BUTTON_RELEASE);
     }
+
+    // Handle pressure system events (logging only for now)
+    if (event & EVENT_PRESSURE_QUEUE_FULL) {
+        Log::warn("Pressure queue full event received. System may be overloaded.");
+    }
+    
+    if (event & EVENT_I2C_ERROR_RECOVERY) {
+        Log::warn("I2C error recovery event received. Bus was reset.");
+    }
 }
 
 /** @brief Executes the actions associated with each system state.
@@ -325,6 +347,7 @@ static void handleStateActions() {
             if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
             if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
+            if (g_messageFormatterTaskHandle) vTaskSuspend(g_messageFormatterTaskHandle);
             break;
 
         case SYSTEM_STATE_CONNECTED_WIFI:
@@ -334,7 +357,8 @@ static void handleStateActions() {
             if (g_mqttTaskHandle) vTaskResume(g_mqttTaskHandle);
             if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
-            if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
+            if (g_pressureTelemetryTaskHandle) vTaskResume(g_pressureTelemetryTaskHandle);  // Activar en WIFI
+            if (g_messageFormatterTaskHandle) vTaskSuspend(g_messageFormatterTaskHandle);   // Suspender hasta MQTT
             break;
 
         case SYSTEM_STATE_CONFIG_MQTT:
@@ -346,6 +370,7 @@ static void handleStateActions() {
             if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
             if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
+            if (g_messageFormatterTaskHandle) vTaskSuspend(g_messageFormatterTaskHandle);  // Suspender durante config MQTT
             break;
 
         case SYSTEM_STATE_CONNECTED_MQTT:
@@ -356,6 +381,7 @@ static void handleStateActions() {
             if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
             if (g_pressureTelemetryTaskHandle) vTaskResume(g_pressureTelemetryTaskHandle);
+            if (g_messageFormatterTaskHandle) vTaskResume(g_messageFormatterTaskHandle);
             break;
 
         case SYSTEM_STATE_CONFIG_MODE:

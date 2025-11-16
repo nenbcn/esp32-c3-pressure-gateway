@@ -40,7 +40,9 @@ typedef enum {
     EVENT_BUTTON_RELEASED       = (1 << 14), // Button released
     EVENT_WIFI_DISCONNECTED     = (1 << 15), // WiFi disconnected
     EVENT_OTA_UPDATE            = (1 << 16), // OTA update event
-    EVENT_MQTT_AWS_CREDENTIALS  = (1 << 17)  // AWS credentials received
+    EVENT_MQTT_AWS_CREDENTIALS  = (1 << 17), // AWS credentials received
+    EVENT_PRESSURE_QUEUE_FULL   = (1 << 18), // Pressure queue full
+    EVENT_I2C_ERROR_RECOVERY    = (1 << 19)  // I2C bus reset after errors
 } TaskNotificationEvent;
 
 /**

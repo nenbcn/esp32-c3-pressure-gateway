@@ -1,72 +1,93 @@
 /*
  * pressure_telemetry.cpp
  *
- * Simplified pressure telemetry module for real-time monitoring.
- * Processes pressure readings, applies EPA filtering, detects significant changes,
- * and groups data into adaptive intervals for efficient MQTT transmission.
+ * Pressure signal processing and event detection module.
+ * This module focuses exclusively on signal processing: EPA filtering,
+ * derivative calculation, and event detection. It does NOT handle JSON
+ * formatting or MQTT communication - that's handled by message_formatter.
  *
  * Key Features:
- * - Double EPA filtering for noise reduction
- * - Adaptive interval creation (compress stable periods, preserve changes)
- * - 1-second timeout for real-time graphing
- * - Accumulates up to 20 intervals per MQTT message
+ * - Double EPA filtering (primary + secondary) for noise reduction
+ * - Derivative-based change detection with hysteresis
+ * - Adaptive event classification (stable, rising, falling, oscillation)
+ * - Statistical compression for stable periods
+ * - Detailed sample capture for changing periods
  * 
- * Input: g_pressureQueue (raw readings from pressure_reader)
- * Output: g_mqttQueue (formatted MQTT messages with JSON payload)
+ * Input:  g_pressureQueue (PressureReading from pressure_reader)
+ * Output: g_pressureEventQueue (PressureEvent to message_formatter)
  */
 
 #include "pressure_telemetry.h"
-#include "device_id.h"
-#include "led_manager.h"
-#include <ArduinoJson.h>
+#include "system_state.h"
+#include "data_types.h"
 
-// Global MQTT queue
-QueueHandle_t g_mqttQueue = NULL;
+// External queue references (created by their respective modules)
+extern QueueHandle_t g_pressureQueue;         // From pressure_reader
+QueueHandle_t g_pressureEventQueue = NULL;    // Created here
 
 // EPA filter state
 static float primaryFiltered = 0.0f;
 static float secondaryFiltered = 0.0f;
 static bool filtersInitialized = false;
 
-// Current interval being accumulated
-static PressureInterval currentInterval;
-static bool intervalActive = false;
-static uint32_t samplesInInterval = 0;
-static float intervalPressureSum = 0.0f;
+// Derivative calculation state
+static DerivativeWindow derivativeWindow = {0};
+static float filteredDerivative = 0.0f;
 
-// Accumulated intervals buffer (for grouping into messages)
-static PressureInterval intervalBuffer[MAX_INTERVALS_PER_MESSAGE];
-static uint8_t intervalCount = 0;
-static uint64_t lastSendTime = 0;
+// Signal state machine
+static SignalStateMachine stateMachine;
+
+// Period accumulators
+static StableAccumulator stableAccumulator = {0};
+static PressureEvent currentEvent = {0};
+static bool eventInProgress = false;
 
 // Statistics
 static uint32_t totalSamplesProcessed = 0;
-static uint32_t intervalsCreated = 0;
-static uint32_t messagesSent = 0;
+static uint32_t stablePeriodsDetected = 0;
+static uint32_t changingEventsDetected = 0;
+static uint32_t eventsQueueFull = 0;
 
 /**
  * @brief Initializes the pressure telemetry system.
  */
 bool initializePressureTelemetry() {
-    // Create MQTT message queue
-    g_mqttQueue = xQueueCreate(MQTT_QUEUE_SIZE, sizeof(MqttMessage));
-    if (g_mqttQueue == NULL) {
-        Log::error("Failed to create MQTT queue");
+    // Create event queue
+    g_pressureEventQueue = xQueueCreate(PRESSURE_EVENT_QUEUE_SIZE, sizeof(PressureEvent));
+    if (g_pressureEventQueue == NULL) {
+        Log::error("[Telemetry] Failed to create pressure event queue");
         return false;
     }
 
-    // Initialize state
+    // Initialize EPA filters
     filtersInitialized = false;
-    intervalActive = false;
-    intervalCount = 0;
-    lastSendTime = millis();
-    
-    totalSamplesProcessed = 0;
-    intervalsCreated = 0;
-    messagesSent = 0;
+    primaryFiltered = 0.0f;
+    secondaryFiltered = 0.0f;
 
-    Log::info("[Telemetry] Initialized with %dms process interval, %dms send timeout", 
-              TELEMETRY_PROCESS_INTERVAL_MS, TELEMETRY_SEND_TIMEOUT_MS);
+    // Initialize derivative window
+    memset(&derivativeWindow, 0, sizeof(DerivativeWindow));
+    filteredDerivative = 0.0f;
+
+    // Initialize state machine
+    stateMachine.currentState = SIGNAL_STATE_STABLE;
+    stateMachine.stateStartTime = millis();
+    stateMachine.lastEventTime = 0;
+    stateMachine.eventsDetected = 0;
+    stateMachine.transitionPending = false;
+
+    // Initialize accumulators
+    memset(&stableAccumulator, 0, sizeof(StableAccumulator));
+    memset(&currentEvent, 0, sizeof(PressureEvent));
+    eventInProgress = false;
+
+    // Reset statistics
+    totalSamplesProcessed = 0;
+    stablePeriodsDetected = 0;
+    changingEventsDetected = 0;
+    eventsQueueFull = 0;
+
+    Log::info("[Telemetry] Initialized signal processing - EPA α1=%0.2f α2=%0.2f, derivative window=%d", 
+              EPA_ALPHA_PRIMARY, EPA_ALPHA_SECONDARY, DERIVATIVE_WINDOW_SIZE);
     return true;
 }
 
@@ -78,130 +99,235 @@ static inline float applyEPAFilter(float newValue, float prevFiltered, float alp
 }
 
 /**
- * @brief Detects if pressure change is significant enough to close current interval.
+ * @brief Calculates derivative from the sliding window buffer.
  */
-static bool isSignificantChange(float currentFiltered, float intervalAverage) {
-    // Absolute threshold
-    float absoluteDiff = fabs(currentFiltered - intervalAverage);
-    if (absoluteDiff > PRESSURE_CHANGE_THRESHOLD) {
+float calculateDerivative(const DerivativeWindow* window) {
+    if (window->count < 2) {
+        return 0.0f;
+    }
+
+    // Use oldest and newest values for derivative calculation
+    uint16_t oldestIndex = (window->writeIndex + DERIVATIVE_WINDOW_SIZE - window->count) % DERIVATIVE_WINDOW_SIZE;
+    uint16_t newestIndex = (window->writeIndex + DERIVATIVE_WINDOW_SIZE - 1) % DERIVATIVE_WINDOW_SIZE;
+    
+    float valueDiff = window->values[newestIndex] - window->values[oldestIndex];
+    uint64_t timeDiff = window->timestamps[newestIndex] - window->timestamps[oldestIndex];
+    
+    if (timeDiff == 0) {
+        return 0.0f;
+    }
+    
+    // Convert to units per second
+    return (valueDiff * 1000.0f) / (float)timeDiff;
+}
+
+/**
+ * @brief Adds a sample to the derivative window buffer.
+ */
+void addToDerivativeWindow(DerivativeWindow* window, float value, uint64_t timestamp) {
+    window->values[window->writeIndex] = value;
+    window->timestamps[window->writeIndex] = timestamp;
+    
+    window->writeIndex = (window->writeIndex + 1) % DERIVATIVE_WINDOW_SIZE;
+    
+    if (window->count < DERIVATIVE_WINDOW_SIZE) {
+        window->count++;
+    }
+}
+
+/**
+ * @brief Determines event type based on derivative and pressure change.
+ */
+static EventType classifyEvent(float avgDerivative, uint32_t startValue, uint32_t endValue) {
+    float pressureChange = (float)((int32_t)endValue - (int32_t)startValue);
+    
+    // Classify based on overall trend and derivative magnitude
+    if (fabs(avgDerivative) < (DERIVATIVE_THRESHOLD * 0.3f)) {
+        return EVENT_TYPE_STABLE;  // Very small changes
+    } else if (pressureChange > 0 && avgDerivative > 0) {
+        return EVENT_TYPE_RISING;   // Positive trend
+    } else if (pressureChange < 0 && avgDerivative < 0) {
+        return EVENT_TYPE_FALLING;  // Negative trend
+    } else {
+        return EVENT_TYPE_OSCILLATION;  // Mixed or contradictory signals
+    }
+}
+
+/**
+ * @brief Updates signal state machine based on current derivative value.
+ */
+bool updateSignalStateMachine(SignalStateMachine* stateMachine, float currentDerivative, uint64_t currentTime) {
+    bool stateChanged = false;
+    float absDerivative = fabs(currentDerivative);
+    
+    SignalState previousState = stateMachine->currentState;
+    
+    switch (stateMachine->currentState) {
+        case SIGNAL_STATE_STABLE:
+            // Check for transition to changing state
+            if (absDerivative > DERIVATIVE_THRESHOLD) {
+                stateMachine->currentState = SIGNAL_STATE_CHANGING;
+                stateMachine->stateStartTime = currentTime;
+                stateMachine->transitionPending = false;
+                stateChanged = true;
+                Log::debug("[Telemetry] State: STABLE → CHANGING (derivative=%.1f)", currentDerivative);
+            }
+            break;
+            
+        case SIGNAL_STATE_CHANGING:
+            // Check for transition back to stable (with hysteresis)
+            if (absDerivative < (DERIVATIVE_THRESHOLD * EVENT_HYSTERESIS_FACTOR)) {
+                // Require minimum time in changing state before allowing transition
+                if ((currentTime - stateMachine->stateStartTime) >= MIN_EVENT_DURATION_MS) {
+                    stateMachine->currentState = SIGNAL_STATE_STABLE;
+                    stateMachine->stateStartTime = currentTime;
+                    stateMachine->transitionPending = false;
+                    stateChanged = true;
+                    Log::debug("[Telemetry] State: CHANGING → STABLE (derivative=%.1f)", currentDerivative);
+                }
+            }
+            break;
+    }
+    
+    if (stateChanged) {
+        stateMachine->lastEventTime = currentTime;
+        stateMachine->eventsDetected++;
+    }
+    
+    return stateChanged;
+}
+
+/**
+ * @brief Processes a sample during stable period.
+ */
+bool processStablePeriod(StableAccumulator* accumulator, uint32_t filteredValue, uint64_t timestamp) {
+    // Initialize accumulator if this is the first sample
+    if (accumulator->sampleCount == 0) {
+        accumulator->minValue = filteredValue;
+        accumulator->maxValue = filteredValue;
+        accumulator->sumValues = 0;
+        accumulator->periodStartTime = timestamp;
+    }
+    
+    // Update statistics
+    accumulator->minValue = min(accumulator->minValue, filteredValue);
+    accumulator->maxValue = max(accumulator->maxValue, filteredValue);
+    accumulator->sumValues += filteredValue;
+    accumulator->sampleCount++;
+    
+    // Check if stable period should be finalized
+    uint64_t periodDuration = timestamp - accumulator->periodStartTime;
+    
+    // Finalize if minimum duration reached and we have enough samples
+    if (periodDuration >= MIN_STABLE_DURATION_MS && accumulator->sampleCount >= 50) {
         return true;
     }
     
-    // Relative threshold
-    if (intervalAverage > 0) {
-        float relativeDiff = absoluteDiff / intervalAverage;
-        if (relativeDiff > (PRESSURE_CHANGE_PERCENT / 100.0f)) {
-            return true;
-        }
+    // Force finalization if maximum timeout reached
+    if (periodDuration >= MAX_INTERVAL_TIMEOUT_MS) {
+        return true;
     }
     
     return false;
 }
 
 /**
- * @brief Closes current interval and adds it to the buffer.
- * @param endTimestamp Timestamp when the interval ends
- * @param wasSignificantChange True if interval closed due to significant pressure change
+ * @brief Processes a sample during changing period.
  */
-static void closeCurrentInterval(uint64_t endTimestamp, bool wasSignificantChange = false) {
-    if (!intervalActive || samplesInInterval == 0) {
+bool processChangingPeriod(PressureEvent* event, uint32_t filteredValue, uint64_t timestamp, float derivative) {
+    // Initialize event if this is the first sample
+    if (event->sampleCount == 0) {
+        event->startTimestamp = timestamp;
+        event->startValue = filteredValue;
+        event->hasDetailedSamples = true;
+        event->triggerReason = (derivative > 0) ? TRIGGER_DERIVATIVE_RISING : TRIGGER_DERIVATIVE_FALLING;
+    }
+    
+    // Add sample to detailed array if there's space
+    if (event->sampleCount < MAX_SAMPLES_PER_EVENT) {
+        event->samples[event->sampleCount].timestamp = timestamp;
+        event->samples[event->sampleCount].filteredValue = filteredValue;
+        event->samples[event->sampleCount].derivative = derivative;
+    }
+    
+    // Update event properties
+    event->endTimestamp = timestamp;
+    event->endValue = filteredValue;
+    event->sampleCount++;
+    
+    // Check if event should be finalized
+    uint64_t eventDuration = timestamp - event->startTimestamp;
+    
+    // Finalize if we've collected enough samples or reached time limit
+    if (event->sampleCount >= MAX_SAMPLES_PER_EVENT || eventDuration >= MAX_INTERVAL_TIMEOUT_MS) {
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * @brief Finalizes and sends a stable period as an event.
+ */
+void finalizeStablePeriod(const StableAccumulator* accumulator, uint64_t endTimestamp) {
+    if (accumulator->sampleCount == 0) {
         return;
     }
+    
+    PressureEvent event = {0};
+    event.startTimestamp = accumulator->periodStartTime;
+    event.endTimestamp = endTimestamp;
+    event.type = EVENT_TYPE_STABLE;
+    event.startValue = accumulator->sumValues / accumulator->sampleCount;  // Average
+    event.endValue = event.startValue;  // For stable periods, start = end
+    event.sampleCount = accumulator->sampleCount;
+    event.triggerReason = TRIGGER_TIMEOUT;
+    event.hasDetailedSamples = false;  // Only statistics for stable periods
+    
+    // Send to event queue
+    if (xQueueSend(g_pressureEventQueue, &event, 0) == pdTRUE) {
+        stablePeriodsDetected++;
+        Log::debug("[Telemetry] ✓ Stable period: %llu-%llu ms, avg=%lu, samples=%u", 
+                   event.startTimestamp, event.endTimestamp, event.startValue, event.sampleCount);
+    } else {
+        eventsQueueFull++;
+        Log::warn("[Telemetry] Event queue full - dropped stable period");
+        notifySystemState(EVENT_PRESSURE_QUEUE_FULL);
+    }
+}
 
-    // Calculate average pressure for the interval
-    currentInterval.endTimestamp = endTimestamp;
-    currentInterval.pressure = (uint32_t)(intervalPressureSum / samplesInInterval);
-    currentInterval.samplesUsed = samplesInInterval;
-
-    // Add to buffer
-    if (intervalCount < MAX_INTERVALS_PER_MESSAGE) {
-        intervalBuffer[intervalCount++] = currentInterval;
-        intervalsCreated++;
-        
-        Log::debug("[Telemetry] Interval closed: %llu-%llu, pressure=%lu, samples=%u %s",
-                   currentInterval.startTimestamp, currentInterval.endTimestamp,
-                   currentInterval.pressure, currentInterval.samplesUsed,
-                   wasSignificantChange ? "(significant change)" : "(timeout)");
-        
-        // Trigger blue LED blink ONLY if closed due to significant pressure change
-        if (wasSignificantChange) {
-            triggerPressureChangeLed();
+/**
+ * @brief Finalizes and sends a changing period as an event.
+ */
+void finalizeChangingEvent(PressureEvent* event) {
+    if (event->sampleCount == 0) {
+        return;
+    }
+    
+    // Calculate average derivative for classification
+    float avgDerivative = 0.0f;
+    if (event->hasDetailedSamples && event->sampleCount > 1) {
+        uint16_t maxSamples = min((uint16_t)event->sampleCount, (uint16_t)MAX_SAMPLES_PER_EVENT);
+        for (uint16_t i = 0; i < maxSamples; i++) {
+            avgDerivative += event->samples[i].derivative;
         }
-    } else {
-        Log::warn("[Telemetry] Interval buffer full, dropping interval");
+        avgDerivative /= maxSamples;
     }
-
-    // Reset interval state
-    intervalActive = false;
-    samplesInInterval = 0;
-    intervalPressureSum = 0.0f;
-}
-
-/**
- * @brief Starts a new interval.
- */
-static void startNewInterval(uint64_t startTimestamp, float filteredPressure) {
-    currentInterval.startTimestamp = startTimestamp;
-    currentInterval.endTimestamp = startTimestamp;
-    intervalPressureSum = filteredPressure;
-    samplesInInterval = 1;
-    intervalActive = true;
-}
-
-/**
- * @brief Formats intervals into JSON and sends to MQTT queue.
- */
-static void sendIntervalsToMqtt() {
-    if (intervalCount == 0) {
-        return;
-    }
-
-    // Create MQTT message
-    MqttMessage mqttMsg;
-    mqttMsg.qos = 0;  // QoS 0 for telemetry
-
-    // Build topic
-    String deviceId = getDeviceId();
-    snprintf(mqttMsg.topic, sizeof(mqttMsg.topic), 
-             "mica/dev/telemetry/gateway/%s/pressure-data", deviceId.c_str());
-
-    // Build JSON payload (using DynamicJsonDocument to allocate on heap, not stack)
-    DynamicJsonDocument doc(4096);
-    doc["sensor_id"] = deviceId;
     
-    JsonArray intervals = doc.createNestedArray("intervals");
-    for (uint8_t i = 0; i < intervalCount; i++) {
-        JsonObject interval = intervals.createNestedObject();
-        interval["startTimestamp"] = intervalBuffer[i].startTimestamp;
-        interval["endTimestamp"] = intervalBuffer[i].endTimestamp;
-        interval["pressure"] = intervalBuffer[i].pressure;
-        interval["samplesUsed"] = intervalBuffer[i].samplesUsed;
-    }
-
-    // Serialize to string
-    size_t jsonSize = serializeJson(doc, mqttMsg.payload, sizeof(mqttMsg.payload));
+    // Classify event type
+    event->type = classifyEvent(avgDerivative, event->startValue, event->endValue);
     
-    if (jsonSize == 0) {
-        Log::error("[Telemetry] Failed to serialize JSON");
-        return;
-    }
-
-    // Log JSON payload before sending (using Serial.println to avoid truncation)
-    Serial.printf("\n[Telemetry] JSON payload (%d bytes):\n", jsonSize);
-    Serial.println(mqttMsg.payload);
-    Serial.println();
-
-    // Send to MQTT queue
-    if (xQueueSend(g_mqttQueue, &mqttMsg, pdMS_TO_TICKS(100)) == pdTRUE) {
-        messagesSent++;
-        Log::info("[Telemetry] ✓ Sent %d intervals to MQTT queue", intervalCount);
+    // Send to event queue
+    if (xQueueSend(g_pressureEventQueue, event, 0) == pdTRUE) {
+        changingEventsDetected++;
+        Log::debug("[Telemetry] ✓ Change event: %s, %llu-%llu ms, %lu→%lu, samples=%u", 
+                   getEventTypeString(event->type), event->startTimestamp, event->endTimestamp,
+                   event->startValue, event->endValue, event->sampleCount);
     } else {
-        Log::warn("[Telemetry] MQTT queue full, message dropped");
+        eventsQueueFull++;
+        Log::warn("[Telemetry] Event queue full - dropped changing event");
+        notifySystemState(EVENT_PRESSURE_QUEUE_FULL);
     }
-
-    // Reset buffer
-    intervalCount = 0;
-    lastSendTime = millis();
 }
 
 /**
@@ -213,12 +339,12 @@ void pressureTelemetryTask(void *pvParameters) {
     TickType_t lastWakeTime = xTaskGetTickCount();
     const TickType_t processInterval = pdMS_TO_TICKS(TELEMETRY_PROCESS_INTERVAL_MS);
     
-    Log::info("[Telemetry] Task started");
+    Log::info("[Telemetry] Signal processing task started");
     
     while (1) {
         uint64_t cycleStartTime = millis();
         
-        // Process all available samples in queue
+        // Process all available samples from pressure reader
         PressureReading reading;
         while (xQueueReceive(g_pressureQueue, &reading, 0) == pdTRUE) {
             // Skip invalid readings
@@ -235,63 +361,84 @@ void pressureTelemetryTask(void *pvParameters) {
                 secondaryFiltered = rawFloat;
                 filtersInitialized = true;
                 
-                // Start first interval
-                startNewInterval(reading.timestamp, secondaryFiltered);
+                // Initialize state machine
+                stateMachine.stateStartTime = reading.timestamp;
+                Log::debug("[Telemetry] EPA filters initialized with value: %.0f", rawFloat);
                 continue;
             }
 
+            // Apply cascaded EPA filters
             primaryFiltered = applyEPAFilter(rawFloat, primaryFiltered, EPA_ALPHA_PRIMARY);
             secondaryFiltered = applyEPAFilter(primaryFiltered, secondaryFiltered, EPA_ALPHA_SECONDARY);
+            uint32_t filteredValue = (uint32_t)secondaryFiltered;
 
-            // Check if we need to close current interval and start a new one
-            if (intervalActive) {
-                float intervalAverage = intervalPressureSum / samplesInInterval;
-                
-                if (isSignificantChange(secondaryFiltered, intervalAverage)) {
-                    // Significant change detected - close current interval
-                    closeCurrentInterval(reading.timestamp, true);  // ← true = significant change
-                    startNewInterval(reading.timestamp, secondaryFiltered);
-                } else {
-                    // No significant change - accumulate in current interval
-                    intervalPressureSum += secondaryFiltered;
-                    samplesInInterval++;
-                    currentInterval.endTimestamp = reading.timestamp;
-                }
-            } else {
-                // No active interval - start new one
-                startNewInterval(reading.timestamp, secondaryFiltered);
-            }
-        }
-
-        // Check if we should send accumulated intervals
-        uint64_t currentTime = millis();
-        bool timeoutReached = (currentTime - lastSendTime) >= TELEMETRY_SEND_TIMEOUT_MS;
-        bool bufferFull = (intervalCount >= MAX_INTERVALS_PER_MESSAGE);
-
-        if (timeoutReached || bufferFull) {
-            // Close current interval if active (false = closed by timeout, not significant change)
-            if (intervalActive) {
-                closeCurrentInterval(currentTime, false);  // ← false = timeout closure
-            }
+            // Add to derivative window and calculate derivative
+            addToDerivativeWindow(&derivativeWindow, secondaryFiltered, reading.timestamp);
+            float currentDerivative = calculateDerivative(&derivativeWindow);
             
-            // Send all accumulated intervals
-            if (intervalCount > 0) {
-                sendIntervalsToMqtt();
+            // Apply smoothing to derivative
+            filteredDerivative = applyEPAFilter(currentDerivative, filteredDerivative, DERIVATIVE_FILTER_ALPHA);
+
+            // Update state machine
+            bool stateChanged = updateSignalStateMachine(&stateMachine, filteredDerivative, reading.timestamp);
+
+            // Process sample based on current state
+            if (stateMachine.currentState == SIGNAL_STATE_STABLE) {
+                // If we just transitioned from changing to stable, finalize the changing event
+                if (stateChanged && eventInProgress) {
+                    finalizeChangingEvent(&currentEvent);
+                    memset(&currentEvent, 0, sizeof(PressureEvent));
+                    eventInProgress = false;
+                }
+
+                // Process stable period
+                bool shouldFinalize = processStablePeriod(&stableAccumulator, filteredValue, reading.timestamp);
+                if (shouldFinalize) {
+                    finalizeStablePeriod(&stableAccumulator, reading.timestamp);
+                    memset(&stableAccumulator, 0, sizeof(StableAccumulator));
+                }
+                
+            } else { // SIGNAL_STATE_CHANGING
+                // If we just transitioned from stable to changing, finalize the stable period
+                if (stateChanged && stableAccumulator.sampleCount > 0) {
+                    finalizeStablePeriod(&stableAccumulator, reading.timestamp);
+                    memset(&stableAccumulator, 0, sizeof(StableAccumulator));
+                }
+
+                // Process changing period
+                if (!eventInProgress) {
+                    memset(&currentEvent, 0, sizeof(PressureEvent));
+                    eventInProgress = true;
+                }
+                
+                bool shouldFinalize = processChangingPeriod(&currentEvent, filteredValue, reading.timestamp, filteredDerivative);
+                if (shouldFinalize) {
+                    finalizeChangingEvent(&currentEvent);
+                    memset(&currentEvent, 0, sizeof(PressureEvent));
+                    eventInProgress = false;
+                }
             }
         }
 
-        // Periodic statistics (every 10 seconds)
+        // Periodic statistics (every 30 seconds)
         static uint64_t lastStatsTime = 0;
-        if (currentTime - lastStatsTime > 10000) {
-            lastStatsTime = currentTime;
+        if (cycleStartTime - lastStatsTime > 30000) {
+            lastStatsTime = cycleStartTime;
             
             UBaseType_t pressureQueueLevel = uxQueueMessagesWaiting(g_pressureQueue);
-            UBaseType_t mqttQueueLevel = uxQueueMessagesWaiting(g_mqttQueue);
+            UBaseType_t eventQueueLevel = uxQueueMessagesWaiting(g_pressureEventQueue);
             
-            Log::info("[Telemetry] Stats: samples=%lu, intervals=%lu, messages=%lu, queues: pressure=%lu/%d, mqtt=%lu/%d",
-                      totalSamplesProcessed, intervalsCreated, messagesSent,
-                      pressureQueueLevel, PRESSURE_QUEUE_SIZE,
-                      mqttQueueLevel, MQTT_QUEUE_SIZE);
+            Log::info("[Telemetry] Signal processing stats:");
+            Log::info("  Samples processed: %lu, stable periods: %lu, changing events: %lu", 
+                      totalSamplesProcessed, stablePeriodsDetected, changingEventsDetected);
+            Log::info("  Current state: %s, derivative: %.1f, queue levels: pressure=%lu/%d, events=%lu/%d",
+                      (stateMachine.currentState == SIGNAL_STATE_STABLE) ? "STABLE" : "CHANGING",
+                      filteredDerivative, pressureQueueLevel, PRESSURE_QUEUE_SIZE,
+                      eventQueueLevel, PRESSURE_EVENT_QUEUE_SIZE);
+            
+            if (eventsQueueFull > 0) {
+                Log::warn("  Events dropped due to queue full: %lu", eventsQueueFull);
+            }
         }
 
         // Wait for next processing cycle

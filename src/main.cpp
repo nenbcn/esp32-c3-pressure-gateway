@@ -9,8 +9,9 @@ void setup() {
     delay(500);
 
     Serial.println("\n\n===========================================");
-    Serial.println("ESP32-C3 Pressure Gateway - Smart City Mode");
-    Serial.println("===========================================\n");
+    Serial.println("ESP32-C3 Pressure Gateway - Production Mode");
+    Serial.println("100Hz sampling with derivative-based event detection");
+    Serial.println("==========================================");
 
     // Initialize system state (this creates all tasks and initializes all modules)
     if (!initializeSystemState()) {
