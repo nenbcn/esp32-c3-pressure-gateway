@@ -3,21 +3,12 @@
 #ifndef PRESSURE_READER_H
 #define PRESSURE_READER_H
 
-
-
-
 #include <Arduino.h>
-
-typedef struct {
-	unsigned long timestamp;
-	uint32_t rawValue;
-	bool isValid;
-} PressureReading;
+#include "data_types.h"
 #include "Log.h"
 #include "board.h"
 #include "signal_parameters.h"
 #include <Wire.h>
-
 
 extern QueueHandle_t g_pressureQueue;
 extern SemaphoreHandle_t g_i2cMutex;

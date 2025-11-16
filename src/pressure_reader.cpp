@@ -17,6 +17,7 @@
 
 #include "pressure_reader.h"
 #include "signal_parameters.h"
+#include "system_state.h"
 
 QueueHandle_t g_pressureQueue = NULL;
 SemaphoreHandle_t g_i2cMutex = NULL;
@@ -24,6 +25,34 @@ SemaphoreHandle_t g_i2cMutex = NULL;
 // Guarda el último valor válido para validación de variación
 static uint32_t lastValidRawValue = 0;
 static bool firstSample = true;
+
+// Validation recovery
+static uint8_t consecutiveInvalidCount = 0;
+
+// I2C error recovery
+static uint32_t i2cConsecutiveErrors = 0;
+static const uint32_t I2C_MAX_ERRORS_BEFORE_RESET = 10; // 10 errores = 100ms a 100Hz
+
+/**
+ * @brief Reinitializes I2C bus after consecutive errors
+ */
+static void reinitializeI2C() {
+    Log::warn("[I2C] Reinitializing I2C bus after %u consecutive errors", i2cConsecutiveErrors);
+    
+    // Notify system_state of I2C recovery
+    notifySystemState(EVENT_I2C_ERROR_RECOVERY);
+    
+    Wire.end();
+    delay(10); // Brief pause for complete reset
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setClock(I2C_FREQUENCY);
+    
+    // Reset validation state after I2C recovery
+    firstSample = true;
+    consecutiveInvalidCount = 0;
+    
+    Log::info("[I2C] Recovery complete, validation state reset");
+}
 
 /**
  * @brief Inicializa el sistema de lectura de presión y recursos asociados.
@@ -66,66 +95,114 @@ bool initializePressureReader() {
  */
 uint32_t readRawPressure() {
     uint32_t rawValue = 0;
+    bool success = false;
+    
     if (xSemaphoreTake(g_i2cMutex, pdMS_TO_TICKS(I2C_TIMEOUT_MS)) == pdTRUE) {
-        // Log::debug("[I2C] Mutex taken");
         Wire.beginTransmission(WNK80MA_I2C_ADDRESS);
-        // Log::debug("[I2C] beginTransmission to 0x%02X", WNK80MA_I2C_ADDRESS);
         Wire.write(WNK80MA_READ_COMMAND);
-        // Log::debug("[I2C] write command 0x%02X", WNK80MA_READ_COMMAND);
         int endTxResult = Wire.endTransmission(false);
-        // Log::debug("[I2C] endTransmission(false) result: %d", endTxResult);
+        
         if (endTxResult == 0) {
             uint8_t reqBytes = 3;
-            // Log::debug("[I2C] requestFrom 0x%02X, %d bytes", WNK80MA_I2C_ADDRESS, reqBytes);
             uint8_t bytesRead = Wire.requestFrom((uint8_t)WNK80MA_I2C_ADDRESS, reqBytes, (bool)true);
-            // Log::debug("[I2C] requestFrom returned: %d", bytesRead);
             int avail = Wire.available();
-            // Log::debug("[I2C] Wire.available(): %d", avail);
+            
             if (avail == 3) {
                 rawValue = ((uint32_t)Wire.read() << 16) |
                            ((uint32_t)Wire.read() << 8) |
                            ((uint32_t)Wire.read());
-                // Log::debug("[I2C] Read rawValue: %lu", rawValue);
+                success = true;
             } else {
                 Log::error("[I2C] Not enough bytes available: %d", avail);
             }
         } else {
             Log::error("[I2C] endTransmission failed: %d", endTxResult);
         }
+        
         xSemaphoreGive(g_i2cMutex);
-        // Log::debug("[I2C] Mutex released");
     } else {
         Log::error("[I2C] Failed to take mutex");
     }
+    
+    // I2C error recovery logic
+    if (success) {
+        i2cConsecutiveErrors = 0; // Reset counter on success
+    } else {
+        i2cConsecutiveErrors++;
+        if (i2cConsecutiveErrors >= I2C_MAX_ERRORS_BEFORE_RESET) {
+            reinitializeI2C();
+            i2cConsecutiveErrors = 0;
+        }
+    }
+    
     return rawValue;
 }
 
 /**
- * @brief Valida una lectura de presión RAW.
+ * @brief Valida una lectura de presión RAW con validación adaptativa.
  *
- * Criterios de validación:
- * 1. El valor debe estar dentro de los límites RAW_VALUE_MIN y RAW_VALUE_MAX.
- * 2. Si no es la primera muestra, la variación absoluta respecto a la última muestra válida
- *    no debe superar MAX_SAMPLE_VARIATION (ajustada a la frecuencia de muestreo).
+ * Criterios de validación física (no dependen del rango de instalación):
+ * 1. El valor debe estar dentro de los límites del sensor (RAW_VALUE_MIN y RAW_VALUE_MAX).
+ * 2. La tasa de cambio no debe exceder el límite físicamente posible (MAX_CHANGE_PER_SAMPLE).
+ * 
+ * Recovery automático:
+ * - Si hay MAX_CONSECUTIVE_INVALID lecturas inválidas consecutivas, se resetea el baseline.
+ * - Esto permite adaptarse a cambios reales en el rango de presión (cambio de instalación, etc).
  *
- * Si ambas condiciones se cumplen, la muestra es válida y se actualiza el último valor válido.
- * Si alguna condición falla, la muestra se marca como inválida.
+ * Esta estrategia funciona en cualquier rango de presión (2-7 bar) sin necesidad de calibración.
  *
  * @param rawValue Valor RAW leído del sensor.
  * @return true si la muestra es válida, false si es inválida.
  */
 bool validatePressureReading(uint32_t rawValue) {
-    // Validar solo rango absoluto - permitir cambios rápidos de presión legítimos
-    // (aperturas/cierres de grifo, cambios de caudal, etc.)
-    bool inRange = (rawValue > RAW_VALUE_MIN && rawValue < RAW_VALUE_MAX);
-    
-    if (inRange) {
-        lastValidRawValue = rawValue;
-        firstSample = false;
-        return true;
+    // 1. Validación básica del sensor (límites hardware del ADC de 24-bit)
+    if (rawValue <= RAW_VALUE_MIN || rawValue >= RAW_VALUE_MAX) {
+        consecutiveInvalidCount++;
+        if (consecutiveInvalidCount >= MAX_CONSECUTIVE_INVALID) {
+            // Posible problema con el sensor o desconexión
+            Log::warn("[Validation] %u consecutive out-of-range readings, resetting baseline", consecutiveInvalidCount);
+            firstSample = true;
+            consecutiveInvalidCount = 0;
+        }
+        return false;
     }
     
-    return false;
+    // 2. Validación física: tasa de cambio máxima posible
+    #if ENABLE_VARIATION_VALIDATION
+        if (!firstSample) {
+            uint32_t variation = (rawValue > lastValidRawValue) ? 
+                                (rawValue - lastValidRawValue) : 
+                                (lastValidRawValue - rawValue);
+            
+            // Límite físico: cambio máximo posible en 10ms (a 100Hz)
+            // Esto detecta spikes/ruido pero permite cambios reales de presión
+            if (variation > MAX_CHANGE_PER_SAMPLE) {
+                consecutiveInvalidCount++;
+                
+                #ifdef DEBUG_MODE
+                    Log::warn("[Validation] Spike detected: %lu (max physical: %lu)", 
+                             variation, (uint32_t)MAX_CHANGE_PER_SAMPLE);
+                #endif
+                
+                // Recovery: si persiste, probablemente es un cambio real de rango base
+                if (consecutiveInvalidCount >= MAX_CONSECUTIVE_INVALID) {
+                    Log::warn("[Validation] Persistent deviation after %u samples, accepting new baseline: %lu -> %lu", 
+                             consecutiveInvalidCount, lastValidRawValue, rawValue);
+                    lastValidRawValue = rawValue;
+                    firstSample = false;
+                    consecutiveInvalidCount = 0;
+                    return true;
+                }
+                return false;
+            }
+        }
+    #endif
+    
+    // Válido - resetear contador de inválidos y actualizar referencia
+    consecutiveInvalidCount = 0;
+    lastValidRawValue = rawValue;
+    firstSample = false;
+    return true;
 }
 
 /**
@@ -155,25 +232,32 @@ void pressureReaderTask(void *pvParameters) {
         reading.rawValue = readRawPressure();
         reading.isValid = validatePressureReading(reading.rawValue);
         
-        // Print 1 of every 10 readings with newline (every 1 second at 10Hz)
-        readingCount++;
-        if (readingCount % 10 == 0) {
-            Serial.printf("[Reader] RAW=%lu %s (sample %lu)\n", reading.rawValue, reading.isValid ? "✓" : "✗", readingCount);
-        } else {
-            Serial.printf("\r[Reader] RAW=%lu %s     ", reading.rawValue, reading.isValid ? "✓" : "✗");
-        }
+        #ifdef DEBUG_MODE
+            readingCount++;
+            // Print only every 100 samples (1 second at 100Hz) to avoid performance impact
+            if (readingCount % 100 == 0) {
+                Serial.printf("[Reader] Sample %lu: RAW=%lu %s\n", 
+                             readingCount, reading.rawValue, reading.isValid ? "✓" : "✗");
+            }
+            
+            if (!reading.isValid) {
+                Log::warn("[PressureReader] Invalid reading: %lu", reading.rawValue);
+            }
+        #endif
         
-#ifdef DEBUG_MODE
-        if (!reading.isValid) {
-            Log::warn("[PressureReader] Invalid reading: %lu", reading.rawValue);
-        }
-#endif
         if (xQueueSend(g_pressureQueue, &reading, 0) != pdPASS) {
             queueFailCount++;
+            
+            // Notify system_state only on first failure to avoid spam
+            if (queueFailCount == 1) {
+                notifySystemState(EVENT_PRESSURE_QUEUE_FULL);
+            }
+            
             if (queueFailCount == 1 || (queueFailCount % 100 == 0)) {
                 Log::error("[PressureReader] Pressure queue full! Lost samples: %lu", queueFailCount);
             }
         }
+        
         vTaskDelayUntil(&lastWakeTime, frequency);
     }
 }

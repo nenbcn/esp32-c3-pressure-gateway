@@ -15,7 +15,7 @@
 //   - El tamaño efectivo de los batches y la resolución temporal de eventos
 //   - El consumo de CPU y memoria
 // Ajusta los demás parámetros dependientes si cambias este valor.
-#define SENSOR_SAMPLE_RATE_HZ 10
+#define SENSOR_SAMPLE_RATE_HZ 100
 #define SENSOR_SAMPLE_INTERVAL_MS (1000 / SENSOR_SAMPLE_RATE_HZ)
 
 // --- EPA Filter Parameters ---
@@ -28,23 +28,35 @@
 #define EPA_ALPHA_PRIMARY 0.1f      // Primary filter coefficient (más agresivo)
 #define EPA_ALPHA_SECONDARY 0.05f   // Secondary filter coefficient (más suave)
 
-// --- Change Detection for Adaptive Intervals ---
-// PRESSURE_CHANGE_THRESHOLD: Absolute change threshold to close current interval and start a new one
-// PRESSURE_CHANGE_PERCENT: Relative change threshold (percentage of current value)
-// A new interval is created when EITHER threshold is exceeded
-// Both thresholds calibrated for ~4 bar pressure (~3,450,000 raw units)
-#define PRESSURE_CHANGE_THRESHOLD 35000      // Absolute change threshold (raw units) - ~1% at 4 bar
-#define PRESSURE_CHANGE_PERCENT 1.0f         // Relative change threshold (1.0% = significant change)
+// --- DERIVATIVE DETECTION PARAMETERS (Production Algorithm) ---
+#define DERIVATIVE_WINDOW_SIZE 50                    // Window size for derivative calculation (0.5s at 100Hz)
+#define DERIVATIVE_THRESHOLD_PER_SEC 120000.0f       // Derivative threshold per second (raw units/s)
+#define DERIVATIVE_THRESHOLD (DERIVATIVE_THRESHOLD_PER_SEC / SENSOR_SAMPLE_RATE_HZ)
+#define DERIVATIVE_FILTER_ALPHA 0.1f                 // Alpha for derivative smoothing filter
+#define MIN_EVENT_DURATION_MS 50                     // Minimum event duration
+#define EVENT_HYSTERESIS_FACTOR 0.8f                 // Hysteresis factor (80% to exit changing state)
 
-// --- COMMENTED OUT: Complex event detection (not used in simplified version) ---
-// #define DERIVATIVE_WINDOW_SIZE 50        
-// #define DERIVATIVE_THRESHOLD_PER_SEC 120000.0f 
-// #define DERIVATIVE_THRESHOLD (DERIVATIVE_THRESHOLD_PER_SEC / SENSOR_SAMPLE_RATE_HZ)
-// #define DERIVATIVE_FILTER_ALPHA 0.1f    
-// #define MIN_EVENT_DURATION_MS 50        
-// #define PRE_EVENT_PERIOD_MS 400         
-// #define POST_EVENT_PERIOD_MS 0          
-// #define EVENT_HYSTERESIS_FACTOR 0.8f
+// --- ADAPTIVE INTERVAL PARAMETERS ---
+// Signal state machine for optimized data transmission with precise state transitions
+#define MIN_STABLE_DURATION_MS 2000              // Minimum time in stable state before transitioning (2s)
+#define MAX_INTERVAL_TIMEOUT_MS 60000            // Maximum interval duration before forced send (1 minute)
+
+// --- EVENT SAMPLING PARAMETERS ---
+// Maximum samples stored per event (for detailed change intervals)
+#define MAX_SAMPLES_PER_EVENT 200               // Max detailed samples per changing event (2s @ 100Hz)
+
+// --- DATA VALIDATION PARAMETERS ---
+// Raw value limits for sensor validation
+#define RAW_VALUE_MIN 10000UL                   // Minimum valid raw sensor value
+#define RAW_VALUE_MAX 16000000UL                // Maximum valid raw sensor value
+
+// Sample-to-sample variation limits (physics-based, not installation-specific)
+#define ENABLE_VARIATION_VALIDATION true        // Enable variation checking
+#define MAX_PRESSURE_CHANGE_PER_SECOND 500000.0f  // Maximum physically possible change (raw units/s)
+#define MAX_CHANGE_PER_SAMPLE (MAX_PRESSURE_CHANGE_PER_SECOND / SENSOR_SAMPLE_RATE_HZ)  // Per 10ms at 100Hz
+
+// Recovery parameters
+#define MAX_CONSECUTIVE_INVALID 20              // Reset baseline after 20 invalid samples (200ms at 100Hz)
 
 
 
@@ -52,45 +64,36 @@
 // QUEUE AND TASK PARAMETERS
 // =========================
 
-#// Pressure Data Queues
-#// These parameters control the buffering of raw sensor samples and detected events.
-#// You can increase the sizes to improve tolerance to processing/network delays, but this will use more RAM.
-#// Lower values reduce memory usage but increase the risk of data loss if the system is overloaded.
+// Pressure Data Queues
+// These parameters control the buffering of raw sensor samples and detected events.
+// You can increase the sizes to improve tolerance to processing/network delays, but this will use more RAM.
+// Lower values reduce memory usage but increase the risk of data loss if the system is overloaded.
 #define PRESSURE_QUEUE_SIZE 300             // RAW buffer size (samples)
 #define PRESSURE_EVENT_QUEUE_SIZE 10        // Event queue size
+#define MQTT_QUEUE_SIZE 10                  // Queue for MQTT messages
 
-#// Task Stack Sizes and Priorities
-#// These parameters define the FreeRTOS stack size (in bytes) and priority for each main task.
-#// If you increase the size of queues or batches, you may also need to increase the stack size of tasks that process them,
-#// since larger buffers or local copies require more stack memory. As a rule of thumb:
-#//   Required stack ≈ base stack + (record size × max batch/queue size) + safety margin
-#// Monitor for stack overflows if you change these values.
-#// Lowering stack size too much may cause crashes; changing priorities can affect system responsiveness.
+// Task Stack Sizes and Priorities
+// These parameters define the FreeRTOS stack size (in bytes) and priority for each main task.
+// If you increase the size of queues or batches, you may also need to increase the stack size of tasks that process them,
+// since larger buffers or local copies require more stack memory. As a rule of thumb:
+//   Required stack ≈ base stack + (record size × max batch/queue size) + safety margin
+// Monitor for stack overflows if you change these values.
+// Lowering stack size too much may cause crashes; changing priorities can affect system responsiveness.
 #define PRESSURE_READER_STACK_SIZE 4096     // Reader task stack (bytes)
 #define PRESSURE_READER_PRIORITY 5          // Reader task priority
-#define PRESSURE_TELEMETRY_STACK_SIZE 8192  // Telemetry task stack (bytes) - doubled for JSON serialization safety
+#define PRESSURE_TELEMETRY_STACK_SIZE 8192  // Telemetry task stack (bytes)
 #define PRESSURE_TELEMETRY_PRIORITY 3       // Telemetry task priority
 
-// --- Telemetry Configuration for Real-Time Monitoring ---
-// MAX_INTERVALS_PER_MESSAGE: Maximum number of intervals to accumulate before sending
-// TELEMETRY_PROCESS_INTERVAL_MS: How often to process pressure queue (300ms for responsiveness)
-// TELEMETRY_SEND_TIMEOUT_MS: Force send even if buffer not full (1s for real-time graphing)
-#define MAX_INTERVALS_PER_MESSAGE 5          // Max intervals per MQTT message (reduced to limit JSON size)
-#define TELEMETRY_PROCESS_INTERVAL_MS 300    // Process every 300ms
-#define TELEMETRY_SEND_TIMEOUT_MS 1000       // Force send every 1 second
-#define MQTT_QUEUE_SIZE 10                   // Queue for MQTT messages
+#define MESSAGE_FORMATTER_STACK_SIZE 6144   // Message formatter task stack (bytes) - for JSON processing
+#define MESSAGE_FORMATTER_PRIORITY 2        // Message formatter priority
 
-// --- COMMENTED OUT: Old batch parameters (not used in simplified version) ---
-// #define TELEMETRY_BATCH_SIZE 100             
-// #define PRESSURE_BATCH_QUEUE_SIZE 10        
-// #define BATCH_FLUSH_ON_EVENT_END true       
-// #define MQTT_SEND_INTERVAL_MS 60000           
-// #define STATUS_REPORT_INTERVAL_MS 60000
+// --- Processing Intervals ---
+#define TELEMETRY_PROCESS_INTERVAL_MS 100    // Telemetry: Process every 100ms (10 samples at 100Hz)
+#define FORMATTER_PROCESS_INTERVAL_MS 100    // Formatter: Check for events every 100ms
 
-// --- Data Validation ---
-#define RAW_VALUE_MIN 10000UL          // Minimum valid RAW value
-#define RAW_VALUE_MAX 16000000UL        // Maximum valid RAW value
-#define MAX_SAMPLE_VARIATION_100HZ 300000UL    // Máximo permitido para 100Hz
-#define MAX_SAMPLE_VARIATION ( (MAX_SAMPLE_VARIATION_100HZ) * (SENSOR_SAMPLE_RATE_HZ/100.0f) )
+// --- Message Formatter Configuration ---
+// These parameters control batching and timeout for MQTT message generation
+#define MAX_EVENTS_PER_MESSAGE 8             // Max events per MQTT message
+#define FORMATTER_SEND_TIMEOUT_MS 2000       // Force send every 2 seconds
 
 #endif // SIGNAL_PARAMETERS_H
