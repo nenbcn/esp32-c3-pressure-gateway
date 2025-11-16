@@ -1,5 +1,80 @@
 # **📌 Especificaciones del Gateway ESP32**
 
+> **⚠️ NOTA:** Este es el archivo de referencia. La versión de producción está en `src/gateway_specs.md`
+
+> **🔗 Documentos Relacionados:**
+> - **Procesamiento de señal de presión:** `../../src/pressure_signal_specs.md` (arquitectura de colas, algoritmo, estructuras de datos)
+> - **Parámetros configurables:** `../../src/signal_parameters.h`
+> - **Reglas de trabajo:** `../../.github/copilot-instructions.md`
+
+---
+
+## **📂 Archivos de Implementación en `/src`**
+
+**Este documento especifica la arquitectura genérica del gateway. Los siguientes archivos implementan estas especificaciones:**
+
+### **Sistema y Coordinación**
+- `system_state.h/cpp` - Gestión de estados globales y coordinación de tareas
+- `main.cpp` - Punto de entrada y configuración inicial
+
+### **Comunicación y Red**
+- `wifi_connect.h/cpp` - Conexión WiFi con credenciales de EEPROM
+- `wifi_config_mode.h/cpp` - Modo configuración WiFi (AP + web server)
+- `mqtt_handler.h/cpp` - Cliente MQTT genérico para AWS IoT
+
+### **Interfaz de Usuario**
+- `led_manager.h/cpp` - Control de LEDs según estado del sistema
+- `button_manager.h/cpp` - Gestión de botones con ISR y detección de pulsación larga
+
+### **Configuración y Persistencia**
+- `eeprom_config.h/cpp` - Lectura/escritura de parámetros en EEPROM
+- `config.h` - Definiciones de configuración general
+- `secrets.h` - Certificados X.509 y credenciales AWS IoT
+
+### **Utilidades**
+- `device_id.h/cpp` - Generación de ID único desde MAC
+- `ota_manager.h/cpp` - Gestión de actualizaciones OTA
+- `board.h` - Definición de pines del hardware
+
+### **Arquitectura Compartida**
+- `data_types.h/cpp` - Estructuras de datos, colas y mutexes globales
+- `includes.h` - Headers comunes del proyecto
+
+> **📋 Nota:** Para módulos específicos de procesamiento de presión (Pressure Reader, Telemetry, Message Formatter), ver `../../src/pressure_signal_specs.md`
+
+---
+
+## **🔧 Configuración del Hardware**
+
+### **Microcontrolador Base**
+- **Seeeduino XIAO ESP32-C3**
+- Wi-Fi integrado, bajo consumo (deep sleep ≈ 5 µA)
+- Cargador Li-ion integrado (JST 1.25 mm)
+- Alimentación: USB-C o powerbank
+
+### **Mapeo de Pines del Shield**
+
+| Función                    | Pin   | GPIO         | Tipo / Notas                                              | Boot safe / Strapping |
+|----------------------------|-------|--------------|-----------------------------------------------------------|-----------------------|
+| VBAT (ADC batería)         | D10   | GPIO10 (A2)  | ADC                                                      | ✅                    |
+| Sensor presión (ANA)       | D1    | GPIO3 (A1)   | ADC                                                      | ✅                    |
+| Wake‑up digital            | D2    | GPIO4        | Digital, salida de comparador RC ligado a D1              | ✅                    |
+| NeoPixel (WS2812B)         | D3    | GPIO5 (A3)   | Digital                                                   | ✅                    |
+| I²C SDA                    | D4    | GPIO6        | I²C estándar, usa pull‑up interno                         | ✅                    |
+| I²C SCL                    | D5    | GPIO7        | I²C estándar, usa pull‑up interno                         | ✅                    |
+| DIG IN (pulsos)            | D6    | GPIO21       | Digital                                                   | ✅                    |
+| Buzzer (PWM)               | D7    | GPIO20       | Digital                                                   | ✅                    |
+| Relay CTRL (5 V high‑side) | D8    | GPIO8        | PMOS high‑side OFF=HIGH, ON=LOW → 5 V out                 | ⚠ strapping          |
+| 1‑WIRE TEMP (DS18B20)      | D0    | GPIO2 (A0)   | Digital con pull‑up                                       | ⚠ strapping          |
+| Botón usuario (int+ext)    | D9    | GPIO9        | Entrada pull‑up, N.O. a GND                               | ⚠ strapping          |
+
+### **Sensor de Presión**
+- **Modelo:** WNK80MA (I2C, 3.3V)
+- **Dirección I2C:** `0x6D` (hex, fija)
+- **Especificaciones completas:** Ver `src/pressure_signal_specs.md`
+
+---
+
 ## **1️⃣ Enfoque de la Gestión del Sistema**
 - ✅ **Solo `system_state.cpp` puede modificar el estado del sistema.**
 - ✅ **Las tareas se activan y desactivan en `system_state.cpp`, NO dentro de sus módulos.**
@@ -97,13 +172,16 @@ Estos eventos permiten la comunicación entre módulos y el **`system_state`**.
 | **WiFi Connect**    | CONNECTING, CONNECTED_WIFI, CONNECTED_MQTT | CONFIG_MODE, ERROR               |
 | **WiFi Config Mode** | CONFIG_MODE                     | CONNECTING, CONNECTED_WIFI, CONNECTED_MQTT, ERROR |
 | **MQTT Handler**    | CONNECTED_MQTT                  | CONNECTING, CONNECTED_WIFI, CONFIG_MODE, ERROR |
-| **LoRa Receiver**   | Siempre activa                   | -                                |
+| **Pressure Reader** | Siempre activa                   | -                                |
 | **LED Manager**     | Siempre activa                   | -                                |
 | **Button Handler**  | WAITING_BUTTON_RELEASE           | CONNECTING, CONNECTED_WIFI, CONFIG_MODE, CONNECTED_MQTT, ERROR |
 | **Log Task**        | Siempre activa                   | -                                |
 
+> **📋 Nota:** Para tareas específicas de procesamiento de señal de presión (Pressure Reader, Pressure Telemetry, Message Formatter), consultar `src/pressure_signal_specs.md`
 
-## Modules
+---
+
+## **8️⃣ Módulos del Sistema
 
 ## Módulo: Wi-Fi Connect
 
@@ -611,11 +689,8 @@ El módulo **LED Manager** proporciona retroalimentación visual sobre el estado
 
 ### Consideraciones
 1. **Logs:** Proporciona mensajes detallados que ayudan a identificar el estado actual y el comportamiento de los LEDs.
-2. **Compatibilidad:** Los pines definidos para los LEDs deben estar libres y correctamente conectados al hardware.
+3. **Compatibilidad:** Los pines definidos para los LEDs deben estar libres y correctamente conectados al hardware.
 3. **Optimización:** Se utiliza `vTaskDelay` para evitar consumo innecesario de CPU, lo que también asegura un comportamiento suave en los LEDs.
-
-
-
 
 ---
 
@@ -656,4 +731,3 @@ El módulo `Button Manager` se encarga de gestionar la detección de eventos del
    - `buttonTask` no modifica directamente el estado del sistema.  
    - En su lugar, **usa `notifySystemState(evento)`** para informar cambios.  
    - `system_state.cpp` maneja los cambios de estado y activación de tareas.
-

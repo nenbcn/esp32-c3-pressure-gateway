@@ -1,4 +1,29 @@
-# 13. Cómo trabajar con la carpeta test en PlatformIO
+# **🤖 Reglas de Trabajo con GitHub Copilot**
+
+---
+
+## **1. Regla Crítica de Trabajo**
+
+**NUNCA hacer cambios en código sin confirmación explícita del usuario.**
+
+**Proceso obligatorio:**
+1. **ANALIZAR** problema
+2. **PROPONER** solución específica  
+3. **ESPERAR** confirmación (`ok`, `procede`, `adelante`)
+4. **SOLO ENTONCES** ejecutar cambios
+
+**PROHIBIDO:** Hacer cambios directos sin permiso.
+
+---
+
+## **2. Uso de PlatformIO**
+
+- **Ruta ejecutable:** `/Users/nenbcn/.platformio/penv/bin/platformio`
+- Usar **siempre** esta ruta en scripts de automatización y CI/CD.
+
+---
+
+## **3. Trabajo con la Carpeta Test**
 
 Para pruebas de firmware independientes (no unit tests), puedes usar la carpeta `test/` como tu espacio de experimentación y pruebas rápidas, ignorando el contenido de `src/`.
 
@@ -23,6 +48,42 @@ void loop() { Serial.println("Test OK"); delay(1000); }
 **Ventajas:**
 - Permite pruebas rápidas y aisladas sin tocar el código de producción.
 - Ideal para prototipos, pruebas de hardware, y debugging de bajo nivel.
+
+---
+
+## **4. Estándares de Programación**
+
+- **Idioma:** Código y comentarios en inglés
+- **Variables locales:** `camelCase`
+- **Variables globales:** Prefijo `g_`
+- **Constantes:** `MAYÚSCULAS_CON_GUIONES`
+- **Funciones:** `camelCase` con verbo claro
+- **Macro DEBUG_MODE:** Para habilitar logs
+- **Estado global:** Solo modificable en `system_state.cpp`
+
+---
+
+## **5. Regla de Modularidad**
+
+- **Cada módulo independiente** → comunicación por colas y eventos
+- **Variables globales** documentadas y protegidas con mutex
+- **Activación/desactivación de tareas** solo en `system_state.cpp`
+
+---
+
+## **6. Referencias a Documentación Técnica**
+
+**Para consultar especificaciones técnicas del proyecto:**
+
+- **Arquitectura general, hardware, WiFi, MQTT, FreeRTOS:** `src/gateway_specs.md`
+- **Procesamiento específico de señal de presión:** `src/pressure_signal_specs.md`
+- **Parámetros configurables:** `src/signal_parameters.h`
+- **Guía de navegación de specs:** `src/README_SPECS.md`
+
+**📋 IMPORTANTE:** No duplicar información técnica en este archivo - siempre referenciar los archivos de especificación correspondientes.
+
+---
+
 # ESP32-C3 Gateway de Presión WNK80MA con FreeRTOS
 
 ---
