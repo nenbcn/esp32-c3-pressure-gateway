@@ -16,7 +16,44 @@
 
 ---
 
-## **2. Uso de PlatformIO**
+## **2. Workflow de Tareas y Issues**
+
+**TODO.md como lista de trabajo:**
+- `TODO.md` contiene la lista de tareas pendientes priorizadas
+- Revisar TODO.md regularmente para identificar próximas tareas
+
+**Workflow obligatorio antes de implementar:**
+1. **Identificar tarea** en TODO.md
+2. **Crear GitHub Issue** con:
+   - Título descriptivo
+   - Descripción detallada del problema/mejora
+   - Label apropiado (bug, enhancement, documentation, etc)
+   - Milestone si aplica
+3. **Implementar cambios** referenciando el issue en commits
+4. **Commit con referencia**: 
+   - Para cerrar: `fix: description (closes #N)` o `feat: description (closes #N)`
+   - Para referenciar: `refactor: description (ref #N)`
+5. **Actualizar TODO.md** moviendo tarea de "Pendiente" a "Completado"
+
+**NUNCA:**
+- Implementar cambios sin crear issue primero
+- Hacer commits sin referenciar el issue correspondiente
+- Dejar tareas completadas en sección "Pendiente" de TODO.md
+
+**Formato de commits:**
+```
+<type>: <description> (closes #N)
+
+[body opcional con más detalles]
+
+[footer opcional: Breaking Changes, etc]
+```
+
+Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`
+
+---
+
+## **3. Uso de PlatformIO**
 
 - **Ruta ejecutable:** `/Users/nenbcn/.platformio/penv/bin/platformio`
 - Usar **siempre** esta ruta en scripts de automatización y CI/CD.

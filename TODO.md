@@ -1,50 +1,61 @@
-# **📋 TODO: Implementar Algoritmo Completo de Procesamiento de Señal**
+# TODO - ESP32-C3 Pressure Gateway
 
-**Objetivo:** Cambiar de versión SmartCity (10Hz, simplificada) a versión Normal (100Hz, algoritmo completo según especificaciones)
+## 📋 Workflow
 
----
-
-## **📊 Estado Actual vs Objetivo**
-
-| Aspecto | Estado Actual | Objetivo |
-|---------|---------------|----------|
-| Frecuencia | 10Hz (test) | 100Hz (producción) |
-| Detección | Umbral absoluto | Derivada con ventana |
-| Intervalos | Solo promedio | Estables=promedio, Cambios=todas muestras |
-| Estados | Binario simple | Máquina estados local |
-| Arquitectura | 2 colas | 3 colas (raw→eventos→JSON) |
-| Tareas | telemetry+mqtt | telemetry+formatter+mqtt |
-| Debug Mode | Activo | Configurado para producción |
+1. **Revisar tareas pendientes** en este archivo
+2. **Crear GitHub Issue** antes de empezar un cambio (con label y milestone)
+3. **Implementar cambio** referenciando el issue (#N)
+4. **Commit con referencia**: `fix: description (closes #N)` o `feat: description (ref #N)`
+5. **Actualizar este TODO** moviendo tarea a "Completado"
 
 ---
 
-## **🚀 PASOS DE IMPLEMENTACIÓN**
+## 🔴 Pendiente - Alta Prioridad
 
-### **📝 PASO 1: Actualizar Parámetros Base**
-**Archivo:** `src/signal_parameters.h`
-**Descripción:** Cambiar de configuración test (10Hz) a producción (100Hz)
+### Alineación Arquitectónica con mica-gateway
+- [ ] Eliminar pre-suspension de tareas en creación (system_state.cpp)
+- [ ] Activar button task en CONNECTING state (no suspender)
+- [ ] Activar pressure reader en CONNECTING state (no suspender)
+- [ ] Simplificar MQTT reconnection (eliminar rate limiting del loop)
 
-**Cambios:**
-- `SENSOR_SAMPLE_RATE_HZ`: 10 → 100
-- Descomentar parámetros de derivada (actualmente comentados)
-- Ajustar intervalos de telemetría para 100Hz
-- Verificar validación de variación para 100Hz
-
-**Resultado:** Parámetros base preparados para algoritmo completo
+### Logging y Debugging
+- [ ] Reducir CORE_DEBUG_LEVEL de 4 a 3 en platformio.ini (silenciar Wire.cpp errors)
+- [ ] Verificar que I2C state-based logging funciona correctamente
 
 ---
 
-### **📝 PASO 2: Implementar Estructuras de Datos**
-**Archivo:** `src/pressure_telemetry.h`
-**Descripción:** Añadir estructuras para ventana de derivada e intervalos completos
+## 🟡 Pendiente - Media Prioridad
 
-**Cambios:**
-- Estructura para ventana circular de derivada
-- Estructura para intervalos con muestras completas
-- Estados locales de procesamiento de señal
-- Buffers para períodos pre/post evento
+### Optimización
+- [ ] Revisar si se puede re-añadir Vector.h sin impacto en memoria
+- [ ] Documentar trade-offs de AsyncWebServer pointer vs global
 
-**Resultado:** Estructuras de datos preparadas para algoritmo completo
+### Testing
+- [ ] Pruebas con sensor I2C conectado (verificar recovery y logging)
+- [ ] Pruebas de WiFi config mode (AP + web server + AsyncWebServer cleanup)
+- [ ] Pruebas de OTA desde MQTT
+
+---
+
+## 🟢 Pendiente - Baja Prioridad
+
+### Documentación
+- [ ] Actualizar gateway_specs.md con cambios de pressure system
+- [ ] Revisar comentarios de código para claridad
+
+---
+
+## ✅ Completado
+
+### 2025-11-25
+- ✅ Optimización de memoria: MAX_SAMPLES_PER_EVENT 300→100 (33KB liberados)
+- ✅ AsyncWebServer cambiado a pointer para evitar fragmentación ESP32-C3
+- ✅ Stack sizes alineados con mica-gateway (WiFi: 4096, MQTT: 10000, etc)
+- ✅ I2C logging optimizado: solo transiciones de estado, no cada error
+- ✅ Tareas suspendidas desde creación para estabilidad en boot
+- ✅ Safety check en messageFormatterTask: solo procesa si MQTT conectado
+- ✅ Revertido: OTA validation code de main.cpp (mantener consistencia con mica-gateway)
+- ✅ Documentación: ARCHITECTURAL_DIFFERENCES.md creado con análisis completo
 
 ---
 
