@@ -6,15 +6,12 @@
 
 ## 🔴 Pendiente - Alta Prioridad
 
-### Análisis de Memoria ESP32-C3
-- [ ] **CRÍTICO:** Auditoría completa de uso de memoria (RAM: 17.4%, muy ajustado)
-  - Calcular tamaño real de PressureEvent (MAX_SAMPLES_PER_EVENT * sizeof)
-  - Revisar profundidad de colas vs tamaño de estructuras
-  - Analizar picos de heap durante AsyncWebServer creation
-  - Stack watermark monitoring para detectar overflows
-- [ ] Evaluar migración a ESP32-S3 si optimizaciones no son suficientes
-  - S3 tiene 512KB RAM vs 320KB del C3 (60% más memoria)
-  - Mantendría compatibilidad de código (mismo framework)
+### Optimización de Memoria
+- [ ] **Revisar análisis de memoria en detalle** (ver `MEMORY_ANALYSIS.md`)
+  - Decidir si reducir MQTT_QUEUE_SIZE (10→5) y payload (4KB→2KB)
+  - Implementar monitoring de stack watermark y heap fragmentation
+  - Evaluar migración a ESP32-S3 si crashes por memoria aparecen
+  - Hallazgo: g_mqttQueue consume 42KB (12.9% RAM total)
 
 ### Alineación Arquitectónica con mica-gateway
 - [ ] Eliminar pre-suspension de tareas en creación (system_state.cpp)
