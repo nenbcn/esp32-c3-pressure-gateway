@@ -28,7 +28,12 @@
 ## 🟡 Pendiente - Media Prioridad
 
 ### Optimización
-- [ ] Revisar si se puede re-añadir Vector.h sin impacto en memoria
+- [ ] Revisar re-añadir librería Vector.h para detección de SSIDs duplicados
+  - **Contexto:** wifi_config_mode.cpp escanea redes WiFi y genera dropdown
+  - **Actual:** Usa `String.indexOf()` para detectar duplicados (menos eficiente)
+  - **mica-gateway:** Usa `Vector<String>` con `.contains()` (más limpio)
+  - **Razón cambio:** Reducir dependencias y uso de RAM en ESP32-C3
+  - **Revisar:** Si optimizaciones de memoria liberan espacio, volver a Vector.h
 - [ ] Documentar trade-offs de AsyncWebServer pointer vs global
 
 ### Testing
