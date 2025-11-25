@@ -19,6 +19,7 @@
 #include "device_id.h"
 #include "data_types.h"
 #include "signal_parameters.h"
+#include "system_state.h"
 #include <ArduinoJson.h>
 
 // Global queue (created here, declared in data_types.h)
@@ -186,6 +187,12 @@ void messageFormatterTask(void *pvParameters) {
     Log::info("[Formatter] Task started");
     
     while (1) {
+        // Safety check: Only process if MQTT is connected
+        SystemState currentState = getSystemState();
+        if (currentState != SYSTEM_STATE_CONNECTED_MQTT) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
         uint64_t currentTime = millis();
         
         // Process available events in queue

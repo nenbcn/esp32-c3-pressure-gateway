@@ -44,7 +44,7 @@
 
 // --- EVENT SAMPLING PARAMETERS ---
 // Maximum samples stored per event (for detailed change intervals)
-#define MAX_SAMPLES_PER_EVENT 300                // Max detailed samples per changing event (3s @ 100Hz)
+#define MAX_SAMPLES_PER_EVENT 100                // Max detailed samples per changing event (1s @ 100Hz) - reduced to save memory
 
 // --- DATA VALIDATION PARAMETERS ---
 // Raw value limits for sensor validation
@@ -80,12 +80,12 @@
 //   Required stack ≈ base stack + (record size × max batch/queue size) + safety margin
 // Monitor for stack overflows if you change these values.
 // Lowering stack size too much may cause crashes; changing priorities can affect system responsiveness.
-#define PRESSURE_READER_STACK_SIZE 4096     // Reader task stack (bytes)
+#define PRESSURE_READER_STACK_SIZE 3072     // Reader task stack (bytes)
 #define PRESSURE_READER_PRIORITY 5          // Reader task priority
-#define PRESSURE_TELEMETRY_STACK_SIZE 8192  // Telemetry task stack (bytes)
+#define PRESSURE_TELEMETRY_STACK_SIZE 8192  // Telemetry task stack (bytes) - same as mica-gateway
 #define PRESSURE_TELEMETRY_PRIORITY 3       // Telemetry task priority
 
-#define MESSAGE_FORMATTER_STACK_SIZE 6144   // Message formatter task stack (bytes) - for JSON processing
+#define MESSAGE_FORMATTER_STACK_SIZE 10240  // Message formatter task stack (bytes) - for JSON processing with ArduinoJson (needs extra for initialization)
 #define MESSAGE_FORMATTER_PRIORITY 2        // Message formatter priority
 
 // --- Processing Intervals ---

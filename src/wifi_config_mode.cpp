@@ -3,7 +3,7 @@
 #include "wifi_config_mode.h"
 
 
-AsyncWebServer server(80);
+AsyncWebServer* server = nullptr;  // Pointer - create only when needed
 String g_wifiOptions = ""; // Global variable to store detected SSIDs
 
 // Initialize WiFi Config Mode
@@ -42,11 +42,17 @@ void initializeWiFiConfigMode() {
         g_wifiOptions += "<option value=''>No networks found</option>";
     }
 
+    // Free up memory before starting web server
+    Log::info("Free heap before AP: %u bytes, largest block: %u bytes", 
+              ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    
     // 2️⃣ Second, start the AP
     WiFi.mode(WIFI_AP);
     if (WiFi.softAP(AP_SSID, AP_PASSWORD)) {
         Log::info("Access Point started with SSID: %s", AP_SSID);
         Log::info("IP Address: %s", WiFi.softAPIP().toString().c_str());
+        Log::info("Free heap after AP: %u bytes, largest block: %u bytes", 
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         notifySystemState(EVENT_WIFI_CONFIG_STARTED);
     } else {
         Log::error("Failed to start Access Point.");
@@ -54,8 +60,13 @@ void initializeWiFiConfigMode() {
         return;
     }
 
-    // 3️⃣ Third, configure the web server routes
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // 3️⃣ Third, create and configure the web server
+    if (server != nullptr) {
+        delete server;  // Clean up any existing server
+    }
+    server = new AsyncWebServer(80);
+    
+    server->on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         Log::info("HTTP Request received at /");
 
         String html = R"rawliteral(
@@ -111,7 +122,7 @@ void initializeWiFiConfigMode() {
         request->send(200, "text/html", html);
     });
 
-    server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request) {
+    server->on("/save", HTTP_POST, [](AsyncWebServerRequest *request) {
         String ssid, password;
 
         if (request->hasParam("ssid", true)) {
@@ -145,7 +156,9 @@ void initializeWiFiConfigMode() {
 
     // 4️⃣ Fourth, start the web server
     Log::info("Starting Web Server...");
-    server.begin();
+    Log::info("Free heap before server->begin(): %u bytes", ESP.getFreeHeap());
+    Log::info("Largest free block: %u bytes", ESP.getMaxAllocHeap());
+    server->begin();
     Log::info("Web Server started successfully.");
     Log::info("Please, enter the following URL in your browser: http://192.168.4.1");
 }
@@ -182,7 +195,11 @@ void wifiConfigModeTask(void *pvParameters) {
 // Deactivate WiFi Config Mode
 void deactivateWiFiConfigMode() {
     Log::info("Deactivating WiFi Config Mode...");
-    server.end();
+    if (server != nullptr) {
+        server->end();
+        delete server;
+        server = nullptr;
+    }
     WiFi.softAPdisconnect(true);
     Log::info("Web server stopped and AP disabled.");
     notifySystemState(EVENT_WIFI_CONFIG_STOPPED); // Notify that the configuration mode stopped

@@ -83,7 +83,7 @@ bool initializeSystemState() {
 
     initializeOTAManager();
 
-    // Create System Tasks with logs and verify their creation
+    // Create System Tasks with logs and verify their creation (using same stack sizes as mica-gateway)
     if (xTaskCreate(wifiConnectTask, "WiFi Connect Task", 4096, NULL, 2, &g_wifiConnectTaskHandle) != pdPASS) {
         Log::error("Failed to create WiFi Connect Task.");
         return false;
@@ -93,16 +93,22 @@ bool initializeSystemState() {
         Log::error("Failed to create WiFi Config Mode Task.");
         return false;
     }
+    // CRITICAL: Suspend immediately - only active in CONFIG_MODE state
+    vTaskSuspend(g_wifiConfigTaskHandle);
 
-    if (xTaskCreate(mqttConnectTask, "WiFi Config Mode Task", 4096, NULL, 2, &g_mqttConnectTaskHandle) != pdPASS) {
-        Log::error("Failed to create WiFi Config Mode Task.");
+    if (xTaskCreate(mqttConnectTask, "MQTT Connect Task", 4096, NULL, 2, &g_mqttConnectTaskHandle) != pdPASS) {
+        Log::error("Failed to create MQTT Connect Task.");
         return false;
     }
+    // Suspend initially - will be resumed in CONFIG_MQTT state
+    vTaskSuspend(g_mqttConnectTaskHandle);
 
     if (xTaskCreate(mqttPublishTask, "MQTT Task", 10000, NULL, 2, &g_mqttTaskHandle) != pdPASS) {
         Log::error("Failed to create MQTT Task.");
         return false;
     }
+    // Suspend initially - will be resumed when MQTT is ready
+    vTaskSuspend(g_mqttTaskHandle);
 
     // Create Pressure Reader Task (replaces Pin Receiver)
     if (xTaskCreate(pressureReaderTask, "Pressure Reader Task", PRESSURE_READER_STACK_SIZE, NULL, PRESSURE_READER_PRIORITY, &g_pressureReaderTaskHandle) != pdPASS) {
@@ -117,10 +123,14 @@ bool initializeSystemState() {
     }
 
     // Create Message Formatter Task (JSON formatting and batching)
+    // Note: Task is created with normal priority but will be suspended immediately
+    // to prevent execution before MQTT connection is established
     if (xTaskCreate(messageFormatterTask, "Message Formatter Task", MESSAGE_FORMATTER_STACK_SIZE, NULL, MESSAGE_FORMATTER_PRIORITY, &g_messageFormatterTaskHandle) != pdPASS) {
         Log::error("Failed to create Message Formatter Task.");
         return false;
     }
+    // CRITICAL: Suspend immediately to prevent execution before MQTT is ready
+    vTaskSuspend(g_messageFormatterTaskHandle);
 
     if (xTaskCreate(ledTask, "LED Task", 2048, NULL, 1, &g_ledTaskHandle) != pdPASS) {
         Log::error("Failed to create LED Task.");
@@ -193,6 +203,7 @@ void logTaskStatus() {
         "MQTT Task: %s\n"
         "Pressure Reader Task: %s\n"
         "Pressure Telemetry Task: %s\n"
+        "Message Formatter Task: %s\n"
         "LED Task: %s\n"
         "Button Task: %s\n",
         (eTaskGetState(g_wifiConnectTaskHandle) == eSuspended) ? "SUSPENDED" : "ACTIVE",
@@ -201,6 +212,7 @@ void logTaskStatus() {
         (eTaskGetState(g_mqttTaskHandle) == eSuspended) ? "SUSPENDED" : "ACTIVE",
         (eTaskGetState(g_pressureReaderTaskHandle) == eSuspended) ? "SUSPENDED" : "ACTIVE",
         (eTaskGetState(g_pressureTelemetryTaskHandle) == eSuspended) ? "SUSPENDED" : "ACTIVE",
+        (eTaskGetState(g_messageFormatterTaskHandle) == eSuspended) ? "SUSPENDED" : "ACTIVE",
         (g_ledTaskHandle ? "ACTIVE" : "ERROR (Not Created)"),
         (g_buttonTaskHandle ? "ACTIVE" : "ERROR (Not Created)")
     );
@@ -333,7 +345,7 @@ static void handleStateActions() {
             if (g_wifiConfigTaskHandle) vTaskSuspend(g_wifiConfigTaskHandle);
             if (g_mqttConnectTaskHandle) vTaskSuspend(g_mqttConnectTaskHandle);
             if (g_mqttTaskHandle) vTaskSuspend(g_mqttTaskHandle);
-            if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
+            if (g_pressureReaderTaskHandle) vTaskSuspend(g_pressureReaderTaskHandle);  // Suspend until WiFi connected
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
             if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
             if (g_messageFormatterTaskHandle) vTaskSuspend(g_messageFormatterTaskHandle);
@@ -356,7 +368,7 @@ static void handleStateActions() {
             if (g_wifiConfigTaskHandle) vTaskSuspend(g_wifiConfigTaskHandle);
             if (g_mqttConnectTaskHandle) vTaskResume(g_mqttConnectTaskHandle);
             if (g_mqttTaskHandle) vTaskSuspend(g_mqttTaskHandle);
-            if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
+            if (g_pressureReaderTaskHandle) vTaskSuspend(g_pressureReaderTaskHandle);  // Suspend until MQTT ready
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
             if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
             if (g_messageFormatterTaskHandle) vTaskSuspend(g_messageFormatterTaskHandle);  // Suspender durante config MQTT
@@ -378,9 +390,10 @@ static void handleStateActions() {
             if (g_wifiConfigTaskHandle) vTaskResume(g_wifiConfigTaskHandle);
             if (g_mqttConnectTaskHandle) vTaskSuspend(g_mqttConnectTaskHandle);
             if (g_mqttTaskHandle) vTaskSuspend(g_mqttTaskHandle);
-            if (g_pressureReaderTaskHandle) vTaskResume(g_pressureReaderTaskHandle);
+            if (g_pressureReaderTaskHandle) vTaskSuspend(g_pressureReaderTaskHandle);  // CRITICAL: Suspend in config mode
             if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
             if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
+            if (g_messageFormatterTaskHandle) vTaskSuspend(g_messageFormatterTaskHandle);
             break;
 
         case SYSTEM_STATE_OTA_UPDATE:
@@ -388,7 +401,7 @@ static void handleStateActions() {
                 if (g_wifiConnectTaskHandle) vTaskSuspend(g_wifiConnectTaskHandle);
                 if (g_mqttConnectTaskHandle) vTaskSuspend(g_mqttConnectTaskHandle);
                 if (g_mqttTaskHandle) vTaskSuspend(g_mqttTaskHandle);
-                if (g_pressureReaderTaskHandle) vTaskSuspend(g_pressureReaderTaskHandle); // TODO: Resume or Suspend pressure reader during OTA?
+                if (g_pressureReaderTaskHandle) vTaskSuspend(g_pressureReaderTaskHandle); // Suspend during OTA
                 if (g_buttonTaskHandle) vTaskSuspend(g_buttonTaskHandle);
                 if (g_pressureTelemetryTaskHandle) vTaskSuspend(g_pressureTelemetryTaskHandle);
 

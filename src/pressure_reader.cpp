@@ -96,6 +96,7 @@ bool initializePressureReader() {
 uint32_t readRawPressure() {
     uint32_t rawValue = 0;
     bool success = false;
+    static bool lastReadSuccess = true;  // Track state changes
     
     if (xSemaphoreTake(g_i2cMutex, pdMS_TO_TICKS(I2C_TIMEOUT_MS)) == pdTRUE) {
         Wire.beginTransmission(WNK80MA_I2C_ADDRESS);
@@ -113,28 +114,41 @@ uint32_t readRawPressure() {
                            ((uint32_t)Wire.read());
                 success = true;
             } else {
-                Log::error("[I2C] Not enough bytes available: %d", avail);
+                // Only log when transitioning from success to error
+                if (lastReadSuccess) {
+                    Log::error("[I2C] Read error - Not enough bytes available: %d", avail);
+                }
             }
         } else {
-            Log::error("[I2C] endTransmission failed: %d", endTxResult);
+            if (lastReadSuccess) {
+                Log::error("[I2C] endTransmission failed: %d", endTxResult);
+            }
         }
         
         xSemaphoreGive(g_i2cMutex);
     } else {
-        Log::error("[I2C] Failed to take mutex");
+        if (lastReadSuccess) {
+            Log::error("[I2C] Failed to take mutex");
+        }
     }
     
     // I2C error recovery logic
     if (success) {
+        // Log recovery when transitioning from error to success
+        if (!lastReadSuccess) {
+            Log::info("[I2C] Sensor communication recovered");
+        }
         i2cConsecutiveErrors = 0; // Reset counter on success
     } else {
         i2cConsecutiveErrors++;
         if (i2cConsecutiveErrors >= I2C_MAX_ERRORS_BEFORE_RESET) {
+            Log::warn("[I2C] Too many consecutive errors (%d), reinitializing...", i2cConsecutiveErrors);
             reinitializeI2C();
             i2cConsecutiveErrors = 0;
         }
     }
     
+    lastReadSuccess = success;
     return rawValue;
 }
 

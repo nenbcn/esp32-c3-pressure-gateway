@@ -2,6 +2,7 @@
 #include "includes.h"
 #include "Log.h"
 #include "system_state.h"
+#include <esp_ota_ops.h>
 
 void setup() {
     // Initialize serial communication at 115200 baud
@@ -12,6 +13,16 @@ void setup() {
     Serial.println("ESP32-C3 Pressure Gateway - Production Mode");
     Serial.println("100Hz sampling with derivative-based event detection");
     Serial.println("==========================================");
+
+    // Mark OTA as valid to prevent rollback
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            Serial.println("[OTA] Firmware pending verification - marking as valid");
+            esp_ota_mark_app_valid_cancel_rollback();
+        }
+    }
 
     // Initialize system state (this creates all tasks and initializes all modules)
     if (!initializeSystemState()) {
