@@ -1,12 +1,6 @@
 # TODO - ESP32-C3 Pressure Gateway
 
-## 📋 Workflow
-
-1. **Revisar tareas pendientes** en este archivo
-2. **Crear GitHub Issue** antes de empezar un cambio (con label y milestone)
-3. **Implementar cambio** referenciando el issue (#N)
-4. **Commit con referencia**: `fix: description (closes #N)` o `feat: description (ref #N)`
-5. **Actualizar este TODO** moviendo tarea a "Completado"
+> **Workflow:** Ver `.github/copilot-instructions.md` sección "Workflow de Tareas y Issues"
 
 ---
 
